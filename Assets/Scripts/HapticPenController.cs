@@ -19,10 +19,13 @@ public class HapticPenController : MonoBehaviour
 
     [Header("Distance Measurement")]
     public LayerMask surfaceLayerMask = 1; // Which layers count as surface
-    public float maxDistance = 100f; // Maximum raycast distance
+    public float maxDistance = 1f; // Maximum raycast distance
+    [Range(-1.0f, 1.0f)]
     public float distanceOffset = 0f; // Offset to add to measured distance
-    public float rayOriginOffset = 0.04f;
-    public float valueOffset = 0.3f;
+    [Range(0.01f, 1.0f)]
+    public float rayOriginOffset = 0.05f;
+
+    public float valueOffset = 0.05f;
     public int maxEncoderCount = 3000;
 
     [Header("Multiple Objects")]
@@ -45,6 +48,12 @@ public class HapticPenController : MonoBehaviour
     public float distanceShorteningAmount = 0.5f; // Rate of distance shortening per second when pressure > threshold2
     public bool invertPressureResponse = false; // If true, higher pressure = longer pen
 
+    [Header("Distance Smoothing")]
+    public bool enableDistanceSmoothing = true; // Enable/disable smoothing
+    public float smoothingFactor = 0.1f; // Lower = more smoothing (0-1)
+    [Range(0.01f, 1.0f)]
+    public float smoothingTime = 0.1f; // Time to reach target (seconds)
+
     [Header("Debug")]
     public bool showDebugRays = true;
     public bool logSerialData = true;
@@ -53,13 +62,29 @@ public class HapticPenController : MonoBehaviour
     // Parsed sensor data
     private float pressureReading = 0f;
     private long encoderCount = 0;
+    private float realDistance = 0f; // D value - real distance that the pen has extended
     public bool buttonPressed = false;
+    public bool homeButtonPressed = false;
     private bool previousButtonPressed = false;
+
+    // Public properties for data recording access
+    public float PressureReading => pressureReading;
+    public long EncoderCount => encoderCount;
+    public float RealDistance => realDistance;
+    public float CalculatedDistance => calculatedDistance;
+    public float SmoothedDistance => smoothedDistance;
 
     // Distance tracking
     private float currentDistance = 0f;
+    private float smoothedDistance = 0f; // Smoothed version for Arduino communication
+    private float smoothVelocity = 0f; // Velocity for SmoothDamp
     private float targetPenLength = 5f;
     private float pressureDistanceOffset = 0f; // Cumulative offset from pressure
+    
+    // New distance measurement variables
+    private float distanceToSurface = 0f; // d_s
+    private float distanceToObject = 0f;  // d_o
+    private float calculatedDistance = 0f; // Final distance sent to Arduino
 
     // Pressure state tracking
     private enum PressureState
@@ -84,7 +109,7 @@ public class HapticPenController : MonoBehaviour
 
     void Update()
     {
-        MeasureDistanceToSurface();
+        CalculateDistanceToArduino();
         SendDistanceToArduino();
         UpdatePenLength();
         HandleGraspingInput();
@@ -177,7 +202,7 @@ public class HapticPenController : MonoBehaviour
         previousButtonPressed = buttonPressed;
     }
 
-    void MeasureDistanceToSurface()
+    void CalculateDistanceToArduino()
     {
         if (penTip == null) return;
 
@@ -185,103 +210,171 @@ public class HapticPenController : MonoBehaviour
         Vector3 rayOrigin = penTip.position - (penTip.forward * rayOriginOffset);
         Vector3 rayDirection = penTip.forward; // Assuming pen points forward
 
-        float measuredDistance;
+        // Reset distance values
+        distanceToSurface = maxDistance;
+        distanceToObject = maxDistance;
 
-        // Use RaycastAll to get all hits and filter out grasped objects
+        // Use RaycastAll to get all hits
         RaycastHit[] allHits = Physics.RaycastAll(rayOrigin, rayDirection, maxDistance, surfaceLayerMask);
 
-        RaycastHit validHit = new RaycastHit();
-        bool foundValidHit = false;
-        float closestValidDistance = maxDistance;
+        RaycastHit surfaceHit = new RaycastHit();
+        RaycastHit objectHit = new RaycastHit();
+        bool foundSurface = false;
+        bool foundObject = false;
+        float closestSurfaceDistance = maxDistance;
+        float closestObjectDistance = maxDistance;
 
         foreach (RaycastHit hit in allHits)
         {
-            // Check if this hit is from a grasped object
+            // Check if this hit is from a grasped object - skip grasped objects
             bool isGraspedObject = false;
-
             if (graspingSystem != null && graspingSystem.IsGrasping)
             {
-                // Use the grasping system to check if this collider belongs to the grasped object
                 if (graspingSystem.IsGraspedObjectCollider(hit.collider))
                 {
                     isGraspedObject = true;
                 }
             }
 
-            // If this hit is not from a grasped object and is closer than our current best hit
-            if (!isGraspedObject && hit.distance < closestValidDistance)
+            if (isGraspedObject) continue;
+
+            // Check if this hit is from the reference surface
+            bool isSurface = false;
+            if (surface != null && hit.transform == surface)
             {
-                validHit = hit;
-                foundValidHit = true;
-                closestValidDistance = hit.distance;
+                isSurface = true;
+            }
+
+            // If it's the surface and closer than previous surface hits
+            if (isSurface && hit.distance < closestSurfaceDistance)
+            {
+                surfaceHit = hit;
+                foundSurface = true;
+                closestSurfaceDistance = hit.distance;
+            }
+            // If it's an object (not surface) and closer than previous object hits
+            else if (!isSurface && hit.distance < closestObjectDistance)
+            {
+                objectHit = hit;
+                foundObject = true;
+                closestObjectDistance = hit.distance;
             }
         }
 
-        if (foundValidHit)
+        // Update distance values
+        if (foundSurface)
         {
-            measuredDistance = validHit.distance + distanceOffset;
+            distanceToSurface = surfaceHit.distance + distanceOffset;
+        }
+        
+        if (foundObject)
+        {
+            distanceToObject = objectHit.distance + distanceOffset;
+        }
 
-            if (showDebugRays)
+        // Calculate the final distance based on your logic
+        if (foundObject && foundSurface)
+        {
+            // Both object and surface found
+            float d_s = distanceToSurface;
+            float d_o = distanceToObject;
+
+            if (d_o < d_s) // Object is closer than surface
             {
-                Debug.DrawRay(rayOrigin, rayDirection * validHit.distance, Color.green);
-                // Draw a line to show ignored grasped object hits
-                if (graspingSystem != null && graspingSystem.IsGrasping)
+                float difference = d_s - d_o;
+                if (d_s <= difference)
                 {
-                    Debug.DrawRay(rayOrigin, rayDirection * 0.1f, Color.cyan); // Short cyan line to show grasped object is ignored
+                    calculatedDistance = difference;
+                }
+                else
+                {
+                    calculatedDistance = d_s;
                 }
             }
+            else
+            {
+                // Object is farther than surface, use surface distance
+                calculatedDistance = d_s;
+            }
+        }
+        else if (foundSurface)
+        {
+            // Only surface found
+            calculatedDistance = distanceToSurface;
         }
         else
         {
-            measuredDistance = maxDistance + distanceOffset;
-
-            if (showDebugRays)
-            {
-                Debug.DrawRay(rayOrigin, rayDirection * maxDistance, Color.red);
-            }
+            // No valid hits found
+            calculatedDistance = maxDistance + distanceOffset;
         }
 
-        // Update pressure offset based on current state
+        // Apply pressure offset
         if (currentPressureState == PressureState.High)
         {
-            // Increase the offset while pressure is high
-            pressureDistanceOffset += distanceShorteningAmount * Time.deltaTime;
+            pressureDistanceOffset = distanceShorteningAmount;
         }
         else if (currentPressureState == PressureState.Low)
         {
-            // Gradually reset the offset when pressure is low
-            pressureDistanceOffset = Mathf.Max(0, pressureDistanceOffset - distanceShorteningAmount * Time.deltaTime * 2f);
+            pressureDistanceOffset = 0;
         }
-        // When pressure is Medium, maintain current offset (no change)
 
-        // Apply the cumulative offset to the measured distance
-        currentDistance = Mathf.Max(0, measuredDistance - pressureDistanceOffset);
+        // Apply the cumulative offset to the calculated distance
+        currentDistance = Mathf.Max(0, calculatedDistance - pressureDistanceOffset);
+
+        // Apply distance smoothing for Arduino communication
+        if (enableDistanceSmoothing)
+        {
+            // Use SmoothDamp for frame-rate independent smoothing
+            smoothedDistance = Mathf.SmoothDamp(smoothedDistance, currentDistance, ref smoothVelocity, smoothingTime);
+        }
+        else
+        {
+            // No smoothing - use raw distance
+            smoothedDistance = currentDistance;
+        }
+
+        // Debug visualization
+        if (showDebugRays)
+        {
+            if (foundSurface)
+            {
+                Debug.DrawRay(rayOrigin, rayDirection * surfaceHit.distance, Color.blue); // Blue for surface
+            }
+            if (foundObject)
+            {
+                Debug.DrawRay(rayOrigin, rayDirection * objectHit.distance, Color.yellow); // Yellow for objects
+            }
+            if (!foundSurface && !foundObject)
+            {
+                Debug.DrawRay(rayOrigin, rayDirection * maxDistance, Color.red); // Red for no hit
+            }
+        }
 
         if (logDistanceData)
         {
             string graspedInfo = (graspingSystem != null && graspingSystem.IsGrasping) ?
                 $" (Ignoring grasped: {graspingSystem.GraspedObject.name})" : "";
-            Debug.Log($"Distance: {currentDistance:F2} (Measured: {measuredDistance:F2}, Offset: {pressureDistanceOffset:F2}){graspedInfo}");
+            Debug.Log($"Distance: {currentDistance:F3} | d_s: {distanceToSurface:F3} | d_o: {distanceToObject:F3} | Calculated: {calculatedDistance:F3} | Offset: {pressureDistanceOffset:F3}{graspedInfo}");
         }
     }
 
-    public int DistanceToEncoder(float value)
-    {
-        value -= valueOffset;
-        if (value < 0)
-        {
-            value = -value;
-        }
+    // public int DistanceToEncoder(float value)
+    // {
+    //     value -= valueOffset;
+    //     if (value < 0)
+    //     {
+    //         value = -value;
+    //     }
 
-        float fromMin = 0.00f;
-        float fromMax = 0.06f;
-        float toMin = 10f;
-        float toMax = maxEncoderCount;
-        float t = (value - fromMin) / (fromMax - fromMin);
-        float mappedFloat = toMin + (toMax - toMin) * t;
+    //     float fromMin = 0.00f;
+    //     float fromMax = 0.06f;
+    //     float toMin = 10f;
+    //     float toMax = maxEncoderCount;
+    //     float t = (value - fromMin) / (fromMax - fromMin);
+    //     float mappedFloat = toMin + (toMax - toMin) * t;
 
-        return Mathf.FloorToInt(mappedFloat);
-    }
+    //     return Mathf.FloorToInt(mappedFloat);
+    // }
 
     void SendDistanceToArduino()
     {
@@ -292,7 +385,7 @@ public class HapticPenController : MonoBehaviour
         {
             string command;
 
-            // Check pressure state and send appropriate command
+            // Send the actual distance value instead of encoder counts
             switch (currentPressureState)
             {
                 //case PressureState.Medium:
@@ -301,13 +394,13 @@ public class HapticPenController : MonoBehaviour
                 //    break;
 
                 //case PressureState.Low:
-                case PressureState.High:
-                    command = $"M{DistanceToEncoder(currentDistance-0.05f)}\n";
-                    break;
+                //case PressureState.High:
+                //    command = $"D{currentDistance:F4}\n";
+                //    break;
                 default:
-                    // Below threshold1 or above threshold2 - send normal distance
-                    command = $"M{DistanceToEncoder(currentDistance)}\n";
-                    Debug.Log($"target:{DistanceToEncoder(currentDistance)}, current:{encoderCount}");
+                    // Send smoothed distance value with 'M' prefix
+                    command = $"M{smoothedDistance*1000:F1}\n";
+                    // Debug.Log($"target distance:{smoothedDistance:F4} (raw:{currentDistance:F4}), encoder:{encoderCount}");
                     break;
             }
 
@@ -366,7 +459,7 @@ public class HapticPenController : MonoBehaviour
             Debug.Log($"Received from Arduino: {data}");
         }
 
-        // Parse format: "P123|E123|B1"
+        // Parse format: "P0|E1|D0.5|B1|H0"
         try
         {
             string[] parts = data.Split('|');
@@ -388,11 +481,25 @@ public class HapticPenController : MonoBehaviour
                         encoderCount = encoder;
                     }
                 }
+                else if (part.StartsWith("D"))
+                {
+                    if (float.TryParse(part.Substring(1), out float distance))
+                    {
+                        realDistance = distance;
+                    }
+                }
                 else if (part.StartsWith("B"))
                 {
                     if (int.TryParse(part.Substring(1), out int button))
                     {
-                        buttonPressed = (button == 0);
+                        buttonPressed = (button == 1);
+                    }
+                }
+                else if (part.StartsWith("H"))
+                {
+                    if (int.TryParse(part.Substring(1), out int homeButton))
+                    {
+                        homeButtonPressed = (homeButton == 1);
                     }
                 }
             }
@@ -490,13 +597,20 @@ public class HapticPenController : MonoBehaviour
         GUILayout.BeginArea(new Rect(10, 10, 300, 400));
 
         GUILayout.Label($"Serial: {(isConnected ? "Connected" : "Disconnected")}");
-        GUILayout.Label($"Distance: {currentDistance:F2}");
+        GUILayout.Label($"Distance (Raw): {currentDistance:F3}");
+        GUILayout.Label($"Distance (Smoothed): {smoothedDistance:F3}");
+        GUILayout.Label($"Smoothing: {(enableDistanceSmoothing ? "ON" : "OFF")} (Time: {smoothingTime:F2}s)");
+        GUILayout.Label($"d_s (Surface): {distanceToSurface:F3}");
+        GUILayout.Label($"d_o (Object): {distanceToObject:F3}");
+        GUILayout.Label($"Calculated: {calculatedDistance:F3}");
         GUILayout.Label($"Pressure Offset: {pressureDistanceOffset:F3}");
         GUILayout.Label($"Pen Length: {penLength:F2}");
         GUILayout.Label($"Pressure: {pressureReading:F1}");
         GUILayout.Label($"Pressure State: {currentPressureState}");
         GUILayout.Label($"Encoder: {encoderCount}");
+        GUILayout.Label($"Real Distance: {realDistance:F3}");
         GUILayout.Label($"Button: {(buttonPressed ? "Pressed" : "Released")}");
+        GUILayout.Label($"Home Button: {(homeButtonPressed ? "Pressed" : "Released")}");
 
         GUILayout.Space(10);
 
