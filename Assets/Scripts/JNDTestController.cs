@@ -84,11 +84,18 @@ public class JNDTestController : MonoBehaviour
     [Header("Pacing Dot")]
     [SerializeField] private ObjectMover pacingDot;
     [SerializeField] private int blinkCount = 3;
+    [SerializeField] private float waitAtEndDuration = 0.5f;
     [SerializeField] private float waitAfterMovementDuration = 1.0f;
+    [SerializeField] private float returnSpeedMultiplier = 2.0f;
     
     [Header("Test Mode")]
     [SerializeField] private bool testMode = false;
-    
+
+    [Header("Visibility Settings")]
+    [SerializeField] private bool showPen = true;
+    [SerializeField] private GameObject penObject;
+    [SerializeField] private bool showSurface = true;
+
     [Header("Debug Info")]
     [SerializeField] private int currentTestIndex = 0;
     [SerializeField] private bool isRunning = false;
@@ -106,8 +113,9 @@ public class JNDTestController : MonoBehaviour
         ShowingFirstStimulus,
         BlinkingDot,
         MovingDot,
+        WaitingAtEnd,
+        MovingBackToStart,
         WaitingAfterMovement,
-        ResettingDot,
         DelayBetweenStimuli,
         ShowingSecondStimulus,
         WaitingForResponse
@@ -162,8 +170,94 @@ public class JNDTestController : MonoBehaviour
         {
             StartTestSequence();
         }
-        
+
         CreateComparisonCanvas();
+        UpdateVisibility();
+    }
+
+    void OnValidate()
+    {
+        // Update visibility when values change in Inspector
+        UpdateVisibility();
+    }
+
+    private void UpdateVisibility()
+    {
+        // Update pen visibility
+        if (penObject != null)
+        {
+            MeshRenderer[] penRenderers = penObject.GetComponentsInChildren<MeshRenderer>();
+            foreach (var renderer in penRenderers)
+            {
+                renderer.enabled = showPen;
+            }
+        }
+
+        // Update surface visibility based on current surface type
+        if (surfaceType == SurfaceType.Gaussian && gaussianSurface != null)
+        {
+            MeshRenderer gaussianRenderer = gaussianSurface.GetComponent<MeshRenderer>();
+            if (gaussianRenderer != null)
+            {
+                gaussianRenderer.enabled = showSurface;
+            }
+        }
+        else if (surfaceType == SurfaceType.NURBS && nurbsSurface != null)
+        {
+            MeshRenderer nurbsRenderer = nurbsSurface.GetComponent<MeshRenderer>();
+            if (nurbsRenderer != null)
+            {
+                nurbsRenderer.enabled = showSurface;
+            }
+        }
+    }
+
+    // DEPRECATED: No longer used - we now flatten surface instead of disabling collider
+    // Kept for potential future use
+    private void DisableSurfaceCollider()
+    {
+        if (surfaceType == SurfaceType.NURBS && nurbsSurface != null)
+        {
+            MeshCollider meshCollider = nurbsSurface.GetComponent<MeshCollider>();
+            if (meshCollider != null)
+            {
+                meshCollider.enabled = false;
+                Debug.Log("NURBS surface collider disabled");
+            }
+        }
+        else if (surfaceType == SurfaceType.Gaussian && gaussianSurface != null)
+        {
+            MeshCollider meshCollider = gaussianSurface.GetComponent<MeshCollider>();
+            if (meshCollider != null)
+            {
+                meshCollider.enabled = false;
+                Debug.Log("Gaussian surface collider disabled");
+            }
+        }
+    }
+
+    // DEPRECATED: No longer used - collider remains enabled throughout trial
+    // Kept for potential future use
+    private void EnableSurfaceCollider()
+    {
+        if (surfaceType == SurfaceType.NURBS && nurbsSurface != null)
+        {
+            MeshCollider meshCollider = nurbsSurface.GetComponent<MeshCollider>();
+            if (meshCollider != null)
+            {
+                meshCollider.enabled = true;
+                Debug.Log("NURBS surface collider enabled");
+            }
+        }
+        else if (surfaceType == SurfaceType.Gaussian && gaussianSurface != null)
+        {
+            MeshCollider meshCollider = gaussianSurface.GetComponent<MeshCollider>();
+            if (meshCollider != null)
+            {
+                meshCollider.enabled = true;
+                Debug.Log("Gaussian surface collider enabled");
+            }
+        }
     }
     
     void Update()
@@ -540,13 +634,16 @@ public class JNDTestController : MonoBehaviour
                         GUILayout.Label("Pacing dot blinking...");
                         break;
                     case ComparisonState.MovingDot:
-                        GUILayout.Label("Pacing dot moving...");
+                        GUILayout.Label("Pacing dot moving to end...");
+                        break;
+                    case ComparisonState.WaitingAtEnd:
+                        GUILayout.Label("Waiting at end position...");
+                        break;
+                    case ComparisonState.MovingBackToStart:
+                        GUILayout.Label("Pacing dot returning to start...");
                         break;
                     case ComparisonState.WaitingAfterMovement:
                         GUILayout.Label("Waiting after movement...");
-                        break;
-                    case ComparisonState.ResettingDot:
-                        GUILayout.Label("Resetting pacing dot...");
                         break;
                     case ComparisonState.DelayBetweenStimuli:
                         GUILayout.Label("Preparing second stimulus...");
@@ -581,7 +678,7 @@ public class JNDTestController : MonoBehaviour
             case SurfaceType.NURBS:
                 if (nurbsSurface != null)
                 {
-                    nurbsSurface.SetHeight(stimulusValue / 1000);
+                    nurbsSurface.SetHeight((stimulusValue / 1000) + 0.0025f);
                     Debug.Log($"Updated NURBS surface height to: {stimulusValue}");
                 }
                 break;
@@ -668,14 +765,14 @@ public class JNDTestController : MonoBehaviour
         currentReferenceStimulus = referenceStimulus;
         referenceIsFirst = UnityEngine.Random.value > 0.5f;
         isShowingFirstStimulus = true; // Reset stimulus tracking
-        
+
         currentComparisonState = ComparisonState.ShowingFirstStimulus;
         stateTimer = 0f;
-        
+
         // Show first stimulus (reference or test, randomly chosen)
         float firstStimulus = referenceIsFirst ? referenceStimulus : currentTestStimulus;
         UpdateSurfaceHeight(firstStimulus);
-        
+
         Debug.Log($"Starting 2AFC trial - Offset: {testStimulusOffset}, Test: {currentTestStimulus}, Reference: {referenceStimulus}, Reference first: {referenceIsFirst}");
     }
     
@@ -698,36 +795,103 @@ public class JNDTestController : MonoBehaviour
                     // Normal mode: Start the dot blinking process
                     currentComparisonState = ComparisonState.BlinkingDot;
                     stateTimer = 0f;
-                    
+
                     if (pacingDot != null)
                     {
                         pacingDot.BlinkTimes(blinkCount, () => {
                             // After blinking is complete, start moving the dot
                             currentComparisonState = ComparisonState.MovingDot;
                             pacingDot.MoveToDestination(() => {
-                                // After reaching destination, teleport back immediately and start wait period
-                                pacingDot.TeleportToStart(() => {
-                                    currentComparisonState = ComparisonState.WaitingAfterMovement;
-                                    stateTimer = 0f;
-                                });
+                                // After reaching destination, flatten the surface (set amplitude to 0)
+                                UpdateSurfaceHeight(0);
+                                // Wait at end before returning
+                                currentComparisonState = ComparisonState.WaitingAtEnd;
+                                stateTimer = 0f;
                             });
                         });
                     }
                     else
                     {
                         // Fallback if no pacing dot is assigned
-                        currentComparisonState = ComparisonState.WaitingAfterMovement;
+                        currentComparisonState = ComparisonState.DelayBetweenStimuli;
+                        isShowingFirstStimulus = false;
+                        // Hide stimulus
+                        UpdateSurfaceHeight(0);
                         stateTimer = 0f;
                     }
                 }
                 break;
-                
+
             case ComparisonState.BlinkingDot:
             case ComparisonState.MovingDot:
                 // These states are handled by callbacks, just wait
                 break;
-                
+
+            case ComparisonState.WaitingAtEnd:
+                if (stateTimer >= waitAtEndDuration)
+                {
+                    if (pacingDot != null)
+                    {
+                        // After waiting at end, start moving back to start with faster speed
+                        currentComparisonState = ComparisonState.MovingBackToStart;
+                        float originalSpeed = pacingDot.moveSpeed;
+                        pacingDot.moveSpeed = originalSpeed * returnSpeedMultiplier;
+
+                        pacingDot.ResetToStart(() => {
+                            // Restore original speed
+                            pacingDot.moveSpeed = originalSpeed;
+
+                            // After returning to start, proceed based on which stimulus we just showed
+                            if (isShowingFirstStimulus)
+                            {
+                                currentComparisonState = ComparisonState.DelayBetweenStimuli;
+                                isShowingFirstStimulus = false; // Mark that we're moving to second stimulus
+                                // Hide stimulus
+                                UpdateSurfaceHeight(0);
+                            }
+                            else
+                            {
+                                currentComparisonState = ComparisonState.WaitingForResponse;
+                                // Hide stimulus
+                                UpdateSurfaceHeight(0);
+                                // Show comparison canvas
+                                if (showComparisonCanvas && comparisonCanvas != null)
+                                {
+                                    comparisonCanvas.SetActive(true);
+                                }
+                            }
+                            stateTimer = 0f;
+                        });
+                    }
+                    else
+                    {
+                        // Fallback if no pacing dot
+                        if (isShowingFirstStimulus)
+                        {
+                            currentComparisonState = ComparisonState.DelayBetweenStimuli;
+                            isShowingFirstStimulus = false;
+                        }
+                        else
+                        {
+                            currentComparisonState = ComparisonState.WaitingForResponse;
+                            if (showComparisonCanvas && comparisonCanvas != null)
+                            {
+                                comparisonCanvas.SetActive(true);
+                            }
+                        }
+                        UpdateSurfaceHeight(0);
+                    }
+                    stateTimer = 0f;
+                }
+                break;
+
+            case ComparisonState.MovingBackToStart:
+                // These states are handled by callbacks, just wait
+                break;
+
             case ComparisonState.WaitingAfterMovement:
+                // This state is now deprecated - logic moved to ResetToStart callback
+                // Kept for fallback compatibility
                 if (stateTimer >= waitAfterMovementDuration)
                 {
                     // After wait period, proceed based on which stimulus we just showed
@@ -745,16 +909,12 @@ public class JNDTestController : MonoBehaviour
                             comparisonCanvas.SetActive(true);
                         }
                     }
-                    
+
                     // Hide stimulus
                     UpdateSurfaceHeight(0);
-                    
+
                     stateTimer = 0f;
                 }
-                break;
-                
-            case ComparisonState.ResettingDot:
-                // This state is handled by callback, just wait
                 break;
                 
             case ComparisonState.DelayBetweenStimuli:
@@ -785,25 +945,32 @@ public class JNDTestController : MonoBehaviour
                     // Normal mode: Start the dot blinking process for second stimulus
                     currentComparisonState = ComparisonState.BlinkingDot;
                     stateTimer = 0f;
-                    
+
                     if (pacingDot != null)
                     {
                         pacingDot.BlinkTimes(blinkCount, () => {
                             // After blinking is complete, start moving the dot
                             currentComparisonState = ComparisonState.MovingDot;
                             pacingDot.MoveToDestination(() => {
-                                // After reaching destination, teleport back immediately and start wait period
-                                pacingDot.TeleportToStart(() => {
-                                    currentComparisonState = ComparisonState.WaitingAfterMovement;
-                                    stateTimer = 0f;
-                                });
+                                // After reaching destination, flatten the surface (set amplitude to 0)
+                                UpdateSurfaceHeight(0);
+                                // Wait at end before returning
+                                currentComparisonState = ComparisonState.WaitingAtEnd;
+                                stateTimer = 0f;
                             });
                         });
                     }
                     else
                     {
                         // Fallback if no pacing dot is assigned
-                        currentComparisonState = ComparisonState.WaitingAfterMovement;
+                        currentComparisonState = ComparisonState.WaitingForResponse;
+                        // Hide stimulus
+                        UpdateSurfaceHeight(0);
+                        // Show comparison canvas
+                        if (showComparisonCanvas && comparisonCanvas != null)
+                        {
+                            comparisonCanvas.SetActive(true);
+                        }
                         stateTimer = 0f;
                     }
                 }

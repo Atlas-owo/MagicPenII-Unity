@@ -11,7 +11,7 @@ public class ObjectMover : MonoBehaviour
     public KeyCode moveKey = KeyCode.M;
 
     [Header("Speed Settings")]
-    [Range(0.01f, 2f)]
+    [Range(0.01f, 0.05f)]
     public float moveSpeed = 1f;
 
     [Header("Movement Options")]
