@@ -80,6 +80,7 @@ public class JNDTestController : MonoBehaviour
     [SerializeField] private GaussianSurface gaussianSurface;
     [SerializeField] private NURBSSurface nurbsSurface;
     [SerializeField] private bool useSurface = true;
+    [SerializeField] private float nurbsHeightOffset = 0.002f;
 
     [Header("Pacing Dot")]
     [SerializeField] private ObjectMover pacingDot;
@@ -128,6 +129,7 @@ public class JNDTestController : MonoBehaviour
     private float stateTimer;
     private GameObject comparisonCanvas;
     private bool isShowingFirstStimulus = true; // Track which stimulus cycle we're in
+    private float previousOffset = 0f; // Track previous offset to determine approach direction
     
     void Start()
     {
@@ -374,9 +376,12 @@ public class JNDTestController : MonoBehaviour
         float initialStimulus = StaircaseProcedure.SP.GetNextStimulus();
         staircaseInitialized = true;
         waitingForNextTest = false;
-        
+
+        // Reset previous offset for new test
+        previousOffset = initialStimulus;
+
         StartComparisonTrial(initialStimulus, currentTest.referenceStimulus);
-        
+
         Debug.Log($"2AFC Test initialized. Range: {currentTest.minimumValue} to {currentTest.maximumValue}, Reference: {currentTest.referenceStimulus}");
     }
     
@@ -425,26 +430,41 @@ public class JNDTestController : MonoBehaviour
             Debug.Log("Current staircase is already finished.");
             return;
         }
-        
+
         // Hide comparison canvas
         if (comparisonCanvas != null)
         {
             comparisonCanvas.SetActive(false);
         }
-        
+
         // Calculate current offset (reverse of the test stimulus calculation)
         float currentOffset = currentTestStimulus - currentReferenceStimulus;
-        
+
         // Get the transformed response for the staircase
-        bool staircaseResponse = GetStaircaseResponse(differenceDetected, currentOffset);
-        
+        bool staircaseResponse = GetStaircaseResponse(differenceDetected, currentOffset, previousOffset);
+
         // Log detailed information for debugging
         Debug.Log($"User Response: Difference {(differenceDetected ? "DETECTED" : "NOT DETECTED")}");
-        Debug.Log($"Current Values - Test: {currentTestStimulus}, Reference: {currentReferenceStimulus}, Offset: {currentOffset}");
+        Debug.Log($"Current Values - Test: {currentTestStimulus}, Reference: {currentReferenceStimulus}, Offset: {currentOffset}, Previous Offset: {previousOffset}");
         Debug.Log($"Staircase Response: {(staircaseResponse ? "DETECTED" : "NOT DETECTED")} (transformed from user response)");
-        
-        StaircaseProcedure.SP.TrialFinished(staircaseResponse);
-        
+
+        // Save current offset for next trial
+        // IMPORTANT: Don't update previousOffset when at 0 to preserve direction information for catch trials
+        if (!Mathf.Approximately(currentOffset, 0f))
+        {
+            previousOffset = currentOffset;
+        }
+
+        // Special handling for catch trials at offset = 0
+        bool wasAtZeroOffset = Mathf.Approximately(currentOffset, 0f);
+
+        // Only call TrialFinished if NOT at offset=0 OR if user correctly identified no difference
+        // This prevents the staircase state from accumulating when we have false alarms at offset=0
+        if (!wasAtZeroOffset || !differenceDetected)
+        {
+            StaircaseProcedure.SP.TrialFinished(staircaseResponse);
+        }
+
         if (StaircaseProcedure.SP.IsFinished())
         {
             float threshold = StaircaseProcedure.SP.GetThreshold();
@@ -453,23 +473,46 @@ public class JNDTestController : MonoBehaviour
         }
         else
         {
-            float nextOffset = StaircaseProcedure.SP.GetNextStimulus();
+            float nextOffset;
             TestParameters currentTest = testConfigurations[currentTestIndex];
-            
-            // Log the direction of change to verify correct behavior
-            string direction;
-            if (differenceDetected)
+
+            // Special handling for offset = 0 catch trials
+            if (wasAtZeroOffset && differenceDetected)
             {
-                direction = Math.Abs(nextOffset) < Math.Abs(currentOffset) ? "CLOSER to reference" : "FURTHER from reference";
+                // False alarm at offset=0: stay at 0, don't let staircase move
+                nextOffset = 0f;
+                Debug.Log($"False alarm at offset=0: staying at offset=0 for next trial");
             }
             else
             {
-                direction = Math.Abs(nextOffset) > Math.Abs(currentOffset) ? "FURTHER from reference" : "CLOSER to reference";
+                // Let staircase determine next stimulus (with proper step size for current phase)
+                nextOffset = StaircaseProcedure.SP.GetNextStimulus();
+
+                if (wasAtZeroOffset && !differenceDetected)
+                {
+                    // Correct rejection at offset=0: staircase moved away with appropriate step size
+                    string direction = nextOffset < 0 ? "negative" : "positive";
+                    Debug.Log($"Correct rejection at offset=0: moving to {direction} offset={nextOffset} (using staircase's current step size)");
+                }
+                else
+                {
+                    // Normal case: log the direction of change
+                    string direction;
+                    if (differenceDetected)
+                    {
+                        direction = Math.Abs(nextOffset) < Math.Abs(currentOffset) ? "CLOSER to reference" : "FURTHER from reference";
+                    }
+                    else
+                    {
+                        direction = Math.Abs(nextOffset) > Math.Abs(currentOffset) ? "FURTHER from reference" : "CLOSER to reference";
+                    }
+
+                    Debug.Log($"Next offset: {nextOffset} (moving {direction})");
+                }
             }
-            
-            Debug.Log($"Next offset: {nextOffset} (moving {direction})");
+
             Debug.Log("---");
-            
+
             StartComparisonTrial(nextOffset, currentTest.referenceStimulus);
         }
     }
@@ -630,9 +673,6 @@ public class JNDTestController : MonoBehaviour
                     case ComparisonState.ShowingFirstStimulus:
                         GUILayout.Label(isShowingFirstStimulus ? "Presenting first stimulus..." : "Presenting second stimulus...");
                         break;
-                    case ComparisonState.BlinkingDot:
-                        GUILayout.Label("Pacing dot blinking...");
-                        break;
                     case ComparisonState.MovingDot:
                         GUILayout.Label("Pacing dot moving to end...");
                         break;
@@ -678,29 +718,52 @@ public class JNDTestController : MonoBehaviour
             case SurfaceType.NURBS:
                 if (nurbsSurface != null)
                 {
-                    nurbsSurface.SetHeight((stimulusValue / 1000) + 0.0025f);
+                    // Apply proportional offset: 5% of amplitude, same sign as amplitude
+                    // At stimulusValue=0: offset=0, at stimulusValue=±50: offset=±0.0025
+                    float heightWithOffset =((stimulusValue / 1000f) * 1.05f) + nurbsHeightOffset;
+                    nurbsSurface.SetHeight(heightWithOffset);
                     Debug.Log($"Updated NURBS surface height to: {stimulusValue}");
                 }
                 break;
         }
     }
     
-    private bool GetStaircaseResponse(bool userDetectedDifference, float currentOffset)
+    private bool GetStaircaseResponse(bool userDetectedDifference, float currentOffset, float previousOffset)
     {
-        // Transform user response based on reference-centered logic
-        if (userDetectedDifference) 
+        // Special case: When offset is exactly 0 (identical stimuli - catch trial)
+        if (Mathf.Approximately(currentOffset, 0f))
+        {
+            if (userDetectedDifference)
+            {
+                // User detected difference when stimuli are identical (false alarm)
+                // Tell staircase "detected" so it tries to decrease, keeping offset at 0
+                // This prevents rewarding false alarms by making the task easier
+                return true;
+            }
+            else
+            {
+                // User correctly identified no difference (correct rejection)
+                // Move away from 0 using previous offset to determine direction
+                // If we approached from positive, return false so staircase increases (back to positive)
+                // If we approached from negative, return true so staircase decreases (back to negative)
+                return previousOffset < 0;
+            }
+        }
+
+        // Transform user response based on reference-centered logic for non-zero offsets
+        if (userDetectedDifference)
         {
             // User detected difference -> move test stimulus closer to reference (offset toward 0)
             // If offset is positive, tell staircase "detected" so it decreases
             // If offset is negative, tell staircase "not detected" so it increases (toward zero)
             return currentOffset > 0;
         }
-        else 
+        else
         {
             // User didn't detect difference -> move test stimulus away from reference (offset away from 0)
             // If offset is positive, tell staircase "not detected" so it increases (more positive)
-            // If offset is negative/zero, tell staircase "detected" so it decreases (more negative)
-            return currentOffset <= 0;
+            // If offset is negative, tell staircase "detected" so it decreases (more negative)
+            return currentOffset < 0;
         }
     }
     
@@ -769,6 +832,21 @@ public class JNDTestController : MonoBehaviour
         currentComparisonState = ComparisonState.ShowingFirstStimulus;
         stateTimer = 0f;
 
+        // Initialize pacing dot: ensure it's at start position and visible
+        if (pacingDot != null)
+        {
+            pacingDot.TeleportToStart();
+
+            // Ensure the dot is visible
+            Renderer dotRenderer = pacingDot.GetComponent<Renderer>();
+            if (dotRenderer != null && dotRenderer.material != null)
+            {
+                Color dotColor = dotRenderer.material.color;
+                dotColor.a = 1f; // Set alpha to fully opaque
+                dotRenderer.material.color = dotColor;
+            }
+        }
+
         // Show first stimulus (reference or test, randomly chosen)
         float firstStimulus = referenceIsFirst ? referenceStimulus : currentTestStimulus;
         UpdateSurfaceHeight(firstStimulus);
@@ -792,22 +870,18 @@ public class JNDTestController : MonoBehaviour
                 }
                 else
                 {
-                    // Normal mode: Start the dot blinking process
-                    currentComparisonState = ComparisonState.BlinkingDot;
+                    // Normal mode: Move the dot directly (no blinking)
+                    currentComparisonState = ComparisonState.MovingDot;
                     stateTimer = 0f;
 
                     if (pacingDot != null)
                     {
-                        pacingDot.BlinkTimes(blinkCount, () => {
-                            // After blinking is complete, start moving the dot
-                            currentComparisonState = ComparisonState.MovingDot;
-                            pacingDot.MoveToDestination(() => {
-                                // After reaching destination, flatten the surface (set amplitude to 0)
-                                UpdateSurfaceHeight(0);
-                                // Wait at end before returning
-                                currentComparisonState = ComparisonState.WaitingAtEnd;
-                                stateTimer = 0f;
-                            });
+                        pacingDot.MoveToDestination(() => {
+                            // After reaching destination, flatten the surface (set amplitude to 0)
+                            UpdateSurfaceHeight(0);
+                            // Wait at end before returning
+                            currentComparisonState = ComparisonState.WaitingAtEnd;
+                            stateTimer = 0f;
                         });
                     }
                     else
@@ -822,9 +896,12 @@ public class JNDTestController : MonoBehaviour
                 }
                 break;
 
-            case ComparisonState.BlinkingDot:
             case ComparisonState.MovingDot:
-                // These states are handled by callbacks, just wait
+                // This state is handled by callbacks, just wait
+                break;
+
+            case ComparisonState.BlinkingDot:
+                // No longer used - kept for compatibility
                 break;
 
             case ComparisonState.WaitingAtEnd:
@@ -942,22 +1019,18 @@ public class JNDTestController : MonoBehaviour
                 }
                 else
                 {
-                    // Normal mode: Start the dot blinking process for second stimulus
-                    currentComparisonState = ComparisonState.BlinkingDot;
+                    // Normal mode: Move the dot directly (no blinking)
+                    currentComparisonState = ComparisonState.MovingDot;
                     stateTimer = 0f;
 
                     if (pacingDot != null)
                     {
-                        pacingDot.BlinkTimes(blinkCount, () => {
-                            // After blinking is complete, start moving the dot
-                            currentComparisonState = ComparisonState.MovingDot;
-                            pacingDot.MoveToDestination(() => {
-                                // After reaching destination, flatten the surface (set amplitude to 0)
-                                UpdateSurfaceHeight(0);
-                                // Wait at end before returning
-                                currentComparisonState = ComparisonState.WaitingAtEnd;
-                                stateTimer = 0f;
-                            });
+                        pacingDot.MoveToDestination(() => {
+                            // After reaching destination, flatten the surface (set amplitude to 0)
+                            UpdateSurfaceHeight(0);
+                            // Wait at end before returning
+                            currentComparisonState = ComparisonState.WaitingAtEnd;
+                            stateTimer = 0f;
                         });
                     }
                     else
