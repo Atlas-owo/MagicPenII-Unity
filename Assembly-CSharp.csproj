@@ -92,7 +92,9 @@
     <Compile Include="Assets\optitrack-unity\OptiTrack\Plugins\Managed\NatNetLib\Native.cs" />
     <Compile Include="Assets\SimpleXZFollower.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Scripts\OptitrackSkeletonAnimator.cs" />
+    <Compile Include="Assets\Scripts\CDRatioTestController.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\TrialData.cs" />
+    <Compile Include="Assets\Scripts\CDRatioManipulator.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\TresholdCalculationClass.cs" />
     <Compile Include="Assets\Scripts\ConstrainedHapticPenController.cs" />
     <Compile Include="Assets\Scripts\NURBSSurface.cs" />

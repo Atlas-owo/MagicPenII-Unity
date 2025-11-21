@@ -387,6 +387,8 @@
 "Assets/optitrack-unity/OptiTrack/Scripts/OptitrackStreamingClient.cs"
 "Assets/optitrack-unity/OptiTrack/Scripts/OptitrackTrainedMarkerset.cs"
 "Assets/Scripts/ArduinoController.cs"
+"Assets/Scripts/CDRatioManipulator.cs"
+"Assets/Scripts/CDRatioTestController.cs"
 "Assets/Scripts/ConstrainedHapticPenController.cs"
 "Assets/Scripts/DataRecorder.cs"
 "Assets/Scripts/GaussianSurface.cs"
