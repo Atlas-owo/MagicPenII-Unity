@@ -59,7 +59,7 @@
     <UnityVersion>2022.3.34f1c1</UnityVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Analyzer Include="C:\Users\32785\.vscode\extensions\visualstudiotoolsforunity.vstuc-1.1.3\Analyzers\Microsoft.Unity.Analyzers.dll" />
+    <Analyzer Include="C:\Users\32785\.vscode\extensions\visualstudiotoolsforunity.vstuc-1.2.0\Analyzers\Microsoft.Unity.Analyzers.dll" />
     <Analyzer Include="D:\Program Files\Unity\Hub\Editor\2022.3.34f1c1\Editor\Data\Tools\Unity.SourceGenerators\Unity.SourceGenerators.dll" />
     <Analyzer Include="D:\Program Files\Unity\Hub\Editor\2022.3.34f1c1\Editor\Data\Tools\Unity.SourceGenerators\Unity.Properties.SourceGenerator.dll" />
   </ItemGroup>
@@ -77,15 +77,19 @@
     <Compile Include="Assets\Scripts\GaussianSurface.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Scripts\OptitrackStreamingClient.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Scripts\OptitrackTrainedMarkerset.cs" />
+    <Compile Include="Assets\Scripts\ArduinoSerialManager.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Plugins\Managed\NatNetLib\Client.cs" />
     <Compile Include="Assets\Scripts\ArduinoController.cs" />
     <Compile Include="Assets\Scripts\HapticPenController.cs" />
     <Compile Include="Assets\Scripts\ObjectMover.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\Server.cs" />
+    <Compile Include="Assets\Scripts\DistanceCalculator.cs" />
     <Compile Include="Assets\Scripts\HapticPenGraspingSystem.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\PythonProcess.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\MultipleTestManager.cs" />
+    <Compile Include="Assets\Scripts\HapticPenControllerRefactored.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\Sequence.cs" />
+    <Compile Include="Assets\Scripts\PressureStateManager.cs" />
     <Compile Include="Assets\Scripts\NewBehaviourScript.cs" />
     <Compile Include="Assets\Scripts\Under.cs" />
     <Compile Include="Assets\Scripts\MovementFollower.cs" />
@@ -99,6 +103,7 @@
     <Compile Include="Assets\Scripts\ConstrainedHapticPenController.cs" />
     <Compile Include="Assets\Scripts\NURBSSurface.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\ProcedureLogic.cs" />
+    <Compile Include="Assets\Scripts\HapticPenDebugUI.cs" />
     <Compile Include="Assets\Scripts\JNDTestController.cs" />
   </ItemGroup>
   <ItemGroup>
