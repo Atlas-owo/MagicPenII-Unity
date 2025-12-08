@@ -82,6 +82,7 @@
     <Compile Include="Assets\Scripts\ArduinoController.cs" />
     <Compile Include="Assets\Scripts\HapticPenController.cs" />
     <Compile Include="Assets\Scripts\ObjectMover.cs" />
+    <Compile Include="Assets\Scripts\TargetTrail.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\Server.cs" />
     <Compile Include="Assets\Scripts\DistanceCalculator.cs" />
     <Compile Include="Assets\Scripts\HapticPenGraspingSystem.cs" />
@@ -89,8 +90,11 @@
     <Compile Include="Assets\StaircaseProcedure\Scripts\MultipleTestManager.cs" />
     <Compile Include="Assets\Scripts\HapticPenControllerRefactored.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\Sequence.cs" />
+    <Compile Include="Assets\Scripts\TubeTrailRenderer.cs" />
     <Compile Include="Assets\Scripts\PressureStateManager.cs" />
+    <Compile Include="Assets\Scripts\TargetTrailManager.cs" />
     <Compile Include="Assets\Scripts\NewBehaviourScript.cs" />
+    <Compile Include="Assets\Scripts\PathRecorder.cs" />
     <Compile Include="Assets\Scripts\Under.cs" />
     <Compile Include="Assets\Scripts\MovementFollower.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Plugins\Managed\NatNetLib\Native.cs" />
