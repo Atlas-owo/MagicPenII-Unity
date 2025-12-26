@@ -5,11 +5,23 @@ using UnityEngine;
 [RequireComponent(typeof(MeshRenderer))]
 public class TargetTrail : MonoBehaviour
 {
+    public enum TrailShape
+    {
+        Straight,
+        SineWave
+    }
+
     [Header("Configuration")]
-    public float tubeRadius = 0.01f;
-    public float sphereRadius = 0.01f;
+    public TrailShape trailShape = TrailShape.Straight;
+    public float tubeRadius = 0.003f;
+    public float sphereRadius = 0.006f;
     public int radialSegments = 16;
     
+    [Header("Sine Wave Settings")]
+    public float amplitudeStart = 0.05f;
+    public float amplitudeEnd = 0.1f;
+    public float periods = 2.0f;
+
     [Header("Visuals")]
     public Color trailColor = new Color(0, 0, 0, 0.5f); // Translucent Black
     public Color startColor = new Color(1, 1, 0, 0.5f); // Translucent Yellow
@@ -29,23 +41,27 @@ public class TargetTrail : MonoBehaviour
     private Vector3 endPoint;
     private GameObject startSphere;
     private GameObject endSphere;
+    private GameObject guideSphere; // New Guide Ball
     private Transform trackedPenTip; // The transform we are tracking
     private TargetTrailManager manager;
     private TubeTrailRenderer tubeTrailRenderer;
     private PathRecorder pathRecorder;
     private HapticPenController penController; // Need direct access for button state
-    private int trailId;
+    private int trailId;      // Instance ID
+    private int trailTypeId;  // Definition Type ID
     
     // Interaction state
     private bool hasStarted = false;
     private bool wasDrawing = false;
+    private bool hasHitEnd = false;
 
-    public void Initialize(Vector3 start, Vector3 end, TargetTrailManager mgr, Transform penTipOverride, int id)
+    public void Initialize(Vector3 start, Vector3 end, TargetTrailManager mgr, Transform penTipOverride, int id, int typeId)
     {
         startPoint = start;
         endPoint = end;
         manager = mgr;
         trailId = id;
+        trailTypeId = typeId;
         
         GenerateMesh();
         CreateSpheres();
@@ -53,7 +69,11 @@ public class TargetTrail : MonoBehaviour
         // Setup Audio
         audioSource = gameObject.AddComponent<AudioSource>();
         audioSource.playOnAwake = false;
-        
+        if (successSound != null)
+        {
+            audioSource.clip = successSound;
+        }
+
         // Determine what to track
         if (penTipOverride != null)
         {
@@ -89,9 +109,7 @@ public class TargetTrail : MonoBehaviour
             pathRecorder.autoSave = false;
         }
         
-        // Initially hidden until activated by manager? 
-        // Or manager instantiates it when needed. 
-        // Let's assume Manager activates it.
+        // Initially hidden until activated by manager
         gameObject.SetActive(false);
     }
 
@@ -100,6 +118,7 @@ public class TargetTrail : MonoBehaviour
         gameObject.SetActive(true);
         isActive = true;
         hasStarted = false;
+        hasHitEnd = false;
         isCompleted = false;
         wasDrawing = false;
         
@@ -116,13 +135,81 @@ public class TargetTrail : MonoBehaviour
         {
             penController = FindObjectOfType<HapticPenController>();
         }
+
+        // Set Recorder Type ID
+        if (pathRecorder != null)
+        {
+            pathRecorder.SetCurrentTrailType(trailTypeId);
+            pathRecorder.manualControl = (manager.interactionMode == TargetTrailManager.InteractionMode.AutoTouch);
+            pathRecorder.isCapturingOverride = false;
+        }
+
+        if (tubeTrailRenderer != null)
+        {
+            tubeTrailRenderer.manualControl = (manager.interactionMode == TargetTrailManager.InteractionMode.AutoTouch);
+            tubeTrailRenderer.isDrawing = false;
+        }
     }
 
     private void Update()
     {
         if (!isActive || isCompleted || trackedPenTip == null || penController == null) return;
 
-        bool isDrawing = !penController.buttonPressed;
+        if (manager.interactionMode == TargetTrailManager.InteractionMode.ButtonPress)
+        {
+            HandleButtonPressMode();
+        }
+        else
+        {
+            HandleAutoTouchMode();
+        }
+        
+        UpdateGuideBall();
+    }
+
+    private void UpdateGuideBall()
+    {
+        if (guideSphere != null && trailShape == TrailShape.Straight)
+        {
+            if (hasStarted && !isCompleted && isActive)
+            {
+                if (!guideSphere.activeSelf) guideSphere.SetActive(true);
+                // Use infinite line projection
+                Vector3 closestPoint = GetClosestPointOnLine(startPoint, endPoint, trackedPenTip.position);
+                guideSphere.transform.position = closestPoint;
+            }
+            else
+            {
+                if (guideSphere.activeSelf) guideSphere.SetActive(false);
+            }
+        }
+    }
+
+    // Renamed to 'Line' to reflect infinite extent
+    private Vector3 GetClosestPointOnLine(Vector3 a, Vector3 b, Vector3 p)
+    {
+        Vector3 ap = p - a;
+        Vector3 ab = b - a;
+        float magnitudeAB = ab.sqrMagnitude;
+        if (magnitudeAB < 0.000001f) return a;
+        float ABAPproduct = Vector3.Dot(ap, ab);
+        float distance = ABAPproduct / magnitudeAB;
+
+        // Removed clamping (distance < 0 or > 1) to allow movement beyond endpoints
+        return a + ab * distance;
+    }
+
+    private void HandleButtonPressMode()
+    {
+        bool isDrawing = penController.buttonPressed;
+
+        // [NEW] Dynamic Actuation Switching:
+        // When button is pressed -> Active Hybrid Pressure Control
+        // When button is released -> Disable (Standard Raycast Mode)
+        if (penController.enableDirectPressureControl != isDrawing)
+        {
+            penController.enableDirectPressureControl = isDrawing;
+        }
 
         // 1. Detect Start of Stroke (Rising Edge)
         if (isDrawing && !wasDrawing)
@@ -137,75 +224,148 @@ public class TargetTrail : MonoBehaviour
                 // Start Valid Stroke
                 if (pathRecorder != null)
                 {
-                    pathRecorder.StartNewStroke(trailId);
+                    pathRecorder.StartNewStroke(trailId, trailTypeId);
                 }
-                Debug.Log("TargetTrail: Valid Stroke Started!");
+                Debug.Log($"TargetTrail: Valid Stroke Started! (Instance {trailId}, Type {trailTypeId})");
             }
             else
             {
                 hasStarted = false;
                 // Start Invalid Stroke (will be discarded)
-                // We still let PathRecorder buffer it, but we won't commit it.
                 if (pathRecorder != null)
                 {
-                    pathRecorder.StartNewStroke(-1); // Invalid ID or just ignore
+                    pathRecorder.StartNewStroke(-1, -1); 
                 }
                 Debug.Log("TargetTrail: Invalid Stroke Started (Outside Start)");
             }
         }
 
-        // 2. While Drawing
+            // 2. While Drawing
+        // (We no longer auto-complete here; just wait for user to release)
         if (isDrawing)
         {
             if (hasStarted)
             {
-                // Check if we hit End Point
                 if (Vector3.Distance(trackedPenTip.position, endPoint) < sphereRadius)
                 {
-                    // Success!
-                    CompleteTrail();
-                    return; // Exit immediately
+                    if (!hasHitEnd)
+                    {
+                        hasHitEnd = true;
+                        // Play sound on first contact
+                        if (successSound != null && audioSource != null) audioSource.PlayOneShot(successSound);
+                    }
                 }
             }
         }
 
-        // 3. Detect End of Stroke (Falling Edge)
+        // 3. Detect End of Stroke (Falling Edge / Button Release)
         if (!isDrawing && wasDrawing)
         {
             // User lifted pen
             if (hasStarted)
             {
-                // Started valid, but lifted before End -> Fail
-                Debug.Log("TargetTrail: Stroke Failed (Lifted before End)");
-                ResetTrail();
+                // Check if we hit End Point at any time during the stroke
+                if (hasHitEnd)
+                {
+                    // Success!
+                    CompleteTrail();
+                }
+                // Double check if we released INSIDE the sphere but missed the frame check
+                else if (Vector3.Distance(trackedPenTip.position, endPoint) < sphereRadius)
+                {
+                    if (successSound != null && audioSource != null) audioSource.PlayOneShot(successSound);
+                    CompleteTrail();
+                }
+                else
+                {
+                    // Started valid, but lifted outside End -> Fail
+                    Debug.Log("TargetTrail: Stroke Failed (Lifted outside End Area)");
+                    ResetTrail();
+                    
+                    // Discard data
+                    if (pathRecorder != null)
+                    {
+                        pathRecorder.DiscardStroke();
+                    }
+                    
+                    // Clear visual trail
+                    if (tubeTrailRenderer != null)
+                    {
+                        tubeTrailRenderer.Clear();
+                    }
+                }
             }
             else
             {
                 // Started invalid -> Discard
                 Debug.Log("TargetTrail: Invalid Stroke Discarded");
-            }
-
-            // Always discard buffer on pen lift (unless we already committed in CompleteTrail)
-            if (pathRecorder != null)
-            {
-                pathRecorder.DiscardStroke();
-            }
-            
-            // Clear visual trail
-            if (tubeTrailRenderer != null)
-            {
-                tubeTrailRenderer.Clear();
+                // (Cleanup handles below)
+                 if (pathRecorder != null) pathRecorder.DiscardStroke();
+                 if (tubeTrailRenderer != null) tubeTrailRenderer.Clear();
             }
         }
 
         wasDrawing = isDrawing;
     }
 
+    private void HandleAutoTouchMode()
+    {
+        if (!hasStarted)
+        {
+            // Wait for Start Touch
+            if (Vector3.Distance(trackedPenTip.position, startPoint) < sphereRadius)
+            {
+                hasStarted = true;
+                
+                // Start Everything
+                SetMaterial(startSphere, activeStartColor);
+                
+                if (pathRecorder != null)
+                {
+                    pathRecorder.isCapturingOverride = true;
+                    pathRecorder.StartNewStroke(trailId, trailTypeId);
+                }
+                
+                if (tubeTrailRenderer != null)
+                {
+                    tubeTrailRenderer.isDrawing = true;
+                    // Need to manually trigger logic in TubeTrailRenderer? 
+                    // No, setting isDrawing=true in Update (via manual check) should trigger "StartNewStroke" inside TubeTrailRenderer if it detects edge.
+                    // But TubeTrailRenderer's Update runs every frame. We just set the boolean.
+                }
+
+                Debug.Log($"TargetTrail: Auto-Touch Started! (Instance {trailId})");
+            }
+        }
+        else
+        {
+            // We are "Drawing" (implicitly)
+            // Check Distances
+            
+            // 1. Check Success (End Point)
+            if (Vector3.Distance(trackedPenTip.position, endPoint) < sphereRadius)
+            {
+                if (successSound != null && audioSource != null) audioSource.PlayOneShot(successSound);
+                CompleteTrail();
+            }
+            
+            // 2. Optional: Check "Drift" failure? 
+            // If user behaves weirdly, maybe we stop? 
+            // "when hit the ending point, the stroke automatically ends". 
+            // It doesn't say "if you stop touching the start point it fails". 
+            // So once started, it goes until it hits End.
+            // BUT, if they move VERY far away, maybe we should cancel?
+            // For now, assume strict "Start -> ... -> End".
+        }
+    }
+
     private void ResetTrail()
     {
         hasStarted = false;
+        hasHitEnd = false;
         // Reset visual feedback
         SetMaterial(startSphere, startColor);
+        if (guideSphere) guideSphere.SetActive(false);
     }
 
     private void CompleteTrail()
@@ -213,17 +373,29 @@ public class TargetTrail : MonoBehaviour
         isCompleted = true;
         isActive = false;
         
+        // Reset AutoTouch State
+        if (pathRecorder != null)
+        {
+            pathRecorder.isCapturingOverride = false;
+            // pathRecorder.manualControl = false; // Keep it true if mode dictates, or reset?
+            // Better to keep it consistent with Activate()
+        }
+        if (tubeTrailRenderer != null)
+        {
+            tubeTrailRenderer.isDrawing = false;
+        }
+
         Debug.Log("TargetTrail: Completed!");
 
-        // Play Sound
-        if (successSound != null && audioSource != null)
-        {
-            audioSource.PlayOneShot(successSound);
-        }
+        Debug.Log("TargetTrail: Completed!");
+
+        // Play Sound (Moved to trigger points)
+        // if (successSound != null && audioSource != null) ...
         
         // Disappear
         if (startSphere) startSphere.SetActive(false);
         if (endSphere) endSphere.SetActive(false);
+        if (guideSphere) guideSphere.SetActive(false);
         GetComponent<MeshRenderer>().enabled = false;
 
         // Commit Data
@@ -237,7 +409,7 @@ public class TargetTrail : MonoBehaviour
         {
             tubeTrailRenderer.Clear();
         }
-        
+
         // Notify Manager
         if (manager != null)
         {
@@ -264,6 +436,16 @@ public class TargetTrail : MonoBehaviour
         endSphere.transform.localScale = Vector3.one * (sphereRadius * 2);
         SetMaterial(endSphere, endColor);
         Destroy(endSphere.GetComponent<Collider>());
+
+        // Guide Sphere (Initially Hidden)
+        guideSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+        guideSphere.name = "GuideSphere";
+        guideSphere.transform.SetParent(transform);
+        guideSphere.transform.position = startPoint;
+        guideSphere.transform.localScale = Vector3.one * (0.01f * 2); // Radius 0.01
+        SetMaterial(guideSphere, new Color(1, 1, 1, 0.5f)); // Translucent White
+        Destroy(guideSphere.GetComponent<Collider>());
+        guideSphere.SetActive(false);
     }
 
     private void GenerateMesh()
@@ -279,35 +461,73 @@ public class TargetTrail : MonoBehaviour
         SetupTranslucentMaterial(tubeMat, trailColor);
         meshRenderer.material = tubeMat;
 
-        // Generate straight tube
-        Vector3[] points = new Vector3[] { startPoint, endPoint };
-        
-        int vertCount = points.Length * radialSegments;
+        // Determine number of segments based on length
+        float dist = Vector3.Distance(startPoint, endPoint);
+        int curveSegments = Mathf.CeilToInt(dist * 200); // Increased resolution (0.5cm)
+        if (trailShape == TrailShape.SineWave) curveSegments *= 2; 
+        if (curveSegments < 2) curveSegments = 2;
+
+        int vertCount = curveSegments * radialSegments;
         Vector3[] vertices = new Vector3[vertCount];
-        int[] triangles = new int[(points.Length - 1) * radialSegments * 6];
+        int[] triangles = new int[(curveSegments - 1) * radialSegments * 6];
 
-        Vector3 forward = (endPoint - startPoint).normalized;
-        Vector3 up = Vector3.up;
-        if (Mathf.Abs(Vector3.Dot(forward, up)) > 0.99f) up = Vector3.right;
-        Vector3 right = Vector3.Cross(forward, up).normalized;
-        up = Vector3.Cross(right, forward).normalized;
+        // Calculate Plane Normal for Frame Consistency (Zero Twist)
+        Vector3 baseline = endPoint - startPoint;
+        Vector3 baselineDir = baseline.normalized;
+        Vector3 waveUp = Vector3.Cross(baselineDir, Vector3.forward).normalized;
+        if (waveUp.sqrMagnitude < 0.001f) waveUp = Vector3.up;
+        
+        // The curve lies in the plane defined by Baseline and WaveUp.
+        // The normal to this plane is constant.
+        Vector3 planeNormal = Vector3.Cross(baselineDir, waveUp).normalized;
+        
+        // Fallback for straight line on Z axis where cross might be weird?
+        // If baseline is (0,0,1), waveUp is (0,1,0), planeNormal is (-1,0,0). Correct.
 
-        for (int i = 0; i < points.Length; i++)
+        for (int i = 0; i < curveSegments; i++)
         {
+            float t = (float)i / (curveSegments - 1);
+            Vector3 currentPos = GetPointOnPath(t);
+
+            // Calculate tangent
+            Vector3 tangent;
+            if (i < curveSegments - 1)
+            {
+                tangent = (GetPointOnPath(t + 0.001f) - currentPos).normalized;
+            }
+            else
+            {
+                tangent = (currentPos - GetPointOnPath(t - 0.001f)).normalized;
+            }
+
+            // Construct Frame using Fixed Plane Normal
+            // Right vector = PlaneNormal (Constant)
+            // Up vector = Cross(Tangent, Right) (Changes with Tangent)
+            // Note: We need to ensure Tangent is not parallel to PlaneNormal. 
+            // Since Tangent is IN the plane, and PlaneNormal is orthogonal to plane, they are always perpendicular.
+            // So Cross product is safe and stable.
+            
+            // We'll use this consistent frame to avoid twisting.
+            Vector3 frameRight = planeNormal;
+            Vector3 frameUp = Vector3.Cross(tangent, frameRight).normalized;
+            // Recalculate Right to ensure perfect orthogonality (though it should be already)
+            frameRight = Vector3.Cross(frameUp, tangent).normalized;
+
             for (int j = 0; j < radialSegments; j++)
             {
                 float angle = j * Mathf.PI * 2f / radialSegments;
                 float sin = Mathf.Sin(angle);
                 float cos = Mathf.Cos(angle);
 
-                Vector3 offset = (right * cos + up * sin) * tubeRadius;
+                // Build ring on the Frame
+                Vector3 offset = (frameRight * cos + frameUp * sin) * tubeRadius;
                 // Convert to local space
-                vertices[i * radialSegments + j] = transform.InverseTransformPoint(points[i] + offset);
+                vertices[i * radialSegments + j] = transform.InverseTransformPoint(currentPos + offset);
             }
         }
 
         int triIndex = 0;
-        for (int i = 0; i < points.Length - 1; i++)
+        for (int i = 0; i < curveSegments - 1; i++)
         {
             for (int j = 0; j < radialSegments; j++)
             {
@@ -328,7 +548,40 @@ public class TargetTrail : MonoBehaviour
 
         mesh.vertices = vertices;
         mesh.triangles = triangles;
-        mesh.RecalculateNormals();
+        mesh.RecalculateNormals(); // Should be smooth now with consistent topology
+    }
+
+    private Vector3 GetPointOnPath(float t)
+    {
+        Vector3 straightPos = Vector3.Lerp(startPoint, endPoint, t);
+
+        if (trailShape == TrailShape.Straight)
+        {
+            return straightPos;
+        }
+        else // SineWave
+        {
+            // Baseline direction
+            Vector3 baseline = endPoint - startPoint;
+            Vector3 baselineDir = baseline.normalized;
+
+            // Define "Up" for the sine wave. 
+            // Standard Perpendicular on XY plane (Assuming Z is Normal):
+            // Cross(baselineDir, Vector3.forward) gives a vector in XY plane perpendicular to baseline.
+            Vector3 waveUp = Vector3.Cross(baselineDir, Vector3.forward).normalized;
+            // If cross is zero (baseline is Z), fallback
+            if (waveUp.sqrMagnitude < 0.001f) waveUp = Vector3.up;
+
+            float currentAmplitude = Mathf.Lerp(amplitudeStart, amplitudeEnd, t);
+            // 2 periods means 0 to 4pi? User asked for 2 periods. 
+            // 2 periods = 2 * 2PI = 4PI.
+            // But wait, "2 downhills and 2 uphills".
+            // 1 period = 1 uphill (peak) + 1 downhill (trough). 
+            // So 2 periods is correct.
+            float sineValue = Mathf.Sin(t * periods * Mathf.PI * 2f);
+
+            return straightPos + waveUp * currentAmplitude * sineValue;
+        }
     }
 
     private void SetMaterial(GameObject obj, Color color)

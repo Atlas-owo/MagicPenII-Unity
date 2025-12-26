@@ -18,6 +18,7 @@ public class TubeTrailRenderer : MonoBehaviour
 
     [Header("Control")]
     public bool isDrawing = false;
+    public bool manualControl = false; // If true, isDrawing is controlled externally
     public bool clearOnStrokeEnd = true; // Default to true
     public HapticPenController penController;
 
@@ -64,11 +65,11 @@ public class TubeTrailRenderer : MonoBehaviour
             meshRenderer.material.color = color;
         }
 
-        // Control drawing via pen button if controller is available
-        if (penController != null)
+        // Control drawing via pen button if controller is available AND manual control is OFF
+        if (!manualControl && penController != null)
         {
             // User requested logic: isDrawing is true when button is NOT pressed
-            isDrawing = !penController.buttonPressed;
+            isDrawing = penController.buttonPressed;
         }
 
         // Detect start of a new stroke

@@ -18,6 +18,7 @@ public class HapticPenController : MonoBehaviour
     public Transform surface; // The surface to measure distance to
 
     [Header("Distance Measurement")]
+    public bool enableRaycastControl = true; // If false, defaults to 0 distance
     public LayerMask surfaceLayerMask = 1; // Which layers count as surface
     public float maxDistance = 1f; // Maximum raycast distance
     [Range(-1.0f, 1.0f)]
@@ -41,18 +42,61 @@ public class HapticPenController : MonoBehaviour
     public float maxPenLength = 10f;
     public float lengthChangeSpeed = 2f; // How fast the pen changes length
 
-    [Header("Pressure Response")]
-    public float pressureThreshold1 = 10f; // Lower threshold - normal operation below this
-    public float pressureThreshold2 = 30f; // Upper threshold - shorten distance above this
-    public float pressureSensitivity = 0.01f; // How much pressure affects pen length
-    public float distanceShorteningAmount = 0.5f; // Rate of distance shortening per second when pressure > threshold2
-    public bool invertPressureResponse = false; // If true, higher pressure = longer pen
+    [Header("Pressure Control")]
+    public bool enablePressureControl = true;
+    public float pressureRetractThreshold = 40f; // Above this, retract
+    public float pressureExtendThreshold = 10f;  // Below this, extend
+    public float retractionSpeed = 0.2f; // m/s
+    public float extensionSpeed = 0.1f;  // m/s
+    public bool enablePressureSmoothing = true;
+    public float pressurePressSmoothTime = 0.05f; // Fast attack
+    public float pressureReleaseSmoothTime = 0.4f; // Slow release
+    public float pressureDeadband = 2.0f; // Hysteresis threshold
+
+    [Header("Hybrid Pressure Speed Control")]
+    public bool enableDirectPressureControl = false;
+    [Tooltip("Pressure value (a) to start retraction mode")]
+    public float pressureThresholdStart = 10f; 
+    [Tooltip("Pressure value (e) below which extension is allowed (Zero Pressure Threshold)")]
+    public float pressureThresholdExtension = 2.0f; // Relaxed from 0.5 to 2.0
+    [Tooltip("Pressure value (b) for max retraction speed")]
+    public float pressureThresholdMax = 100f;
+    [Tooltip("Motor PWM (c) for start speed (0-255)")]
+    public int motorSpeedStart = 100;
+    [Tooltip("Motor PWM (d) for max speed (0-255)")]
+    public int motorSpeedMax = 255;
+    [Tooltip("Minimum extension distance (y) required to trigger extension command")]
+    public float extensionThreshold = 0.002f; // 2mm
+
+    [Range(-0.01f, 0.01f)]
+    public float hybridModeOffset = 0f; // Small offset added when Hybrid Mode is active
+
+    [Header("Hybrid Extension Dynamics")]
+    [Tooltip("Distance (m) for Minimum extension speed (Close to target)")]
+    public float extDistMin = 0.002f; // 2mm
+    [Tooltip("Distance (m) for Maximum extension speed (Far from target)")]
+    public float extDistMax = 0.05f;  // 50mm
+    [Tooltip("Minimum PWM speed (to overcome friction)")]
+    public int extPWMMin = 80;
+    [Tooltip("Maximum PWM speed")]
+    public int extPWMMax = 255;
 
     [Header("Distance Smoothing")]
     public bool enableDistanceSmoothing = true; // Enable/disable smoothing
     public float smoothingFactor = 0.1f; // Lower = more smoothing (0-1)
     [Range(0.01f, 1.0f)]
     public float smoothingTime = 0.1f; // Time to reach target (seconds)
+
+    [Header("Button Control Mode")]
+    public bool enableButtonControl = false;
+    public bool enableButtonShrink = true; // If false, button C is ignored for manual control
+    public float buttonExtendSpeed = 0.5f;
+    public float buttonShrinkSpeed = 0.5f;
+    private float manualTargetDistance = 0f;
+    private bool wasManualControlActive = false;
+
+    [Header("Midair Mode")]
+    public bool enableMidairMode = false; // Forces pen to 0 extension
 
     [Header("Debug")]
     public bool showDebugRays = true;
@@ -61,9 +105,14 @@ public class HapticPenController : MonoBehaviour
 
     // Parsed sensor data
     private float pressureReading = 0f;
+    private float targetPressure = 0f; // Latched target for deadband
+    private float smoothedPressure = 0f;
+    private float pressureVelocity = 0f;
+    private float currentRetractionOffset = 0f; // Integral value for velocity control
     private long encoderCount = 0;
     private float realDistance = 0f; // D value - real distance that the pen has extended
     public bool buttonPressed = false;
+    public bool buttonCPressed = false; // New button C
     public bool homeButtonPressed = false;
     private bool previousButtonPressed = false;
 
@@ -79,7 +128,7 @@ public class HapticPenController : MonoBehaviour
     private float smoothedDistance = 0f; // Smoothed version for Arduino communication
     private float smoothVelocity = 0f; // Velocity for SmoothDamp
     private float targetPenLength = 5f;
-    private float pressureDistanceOffset = 0f; // Cumulative offset from pressure
+
     
     // New distance measurement variables
     private float distanceToSurface = 0f; // d_s
@@ -87,17 +136,11 @@ public class HapticPenController : MonoBehaviour
     private float calculatedDistance = 0f; // Final distance sent to Arduino
 
     // Pressure state tracking
-    private enum PressureState
-    {
-        Low,    // Below threshold1
-        Medium, // Between threshold1 and threshold2
-        High    // Above threshold2
-    }
-    private PressureState currentPressureState = PressureState.Low;
+
 
     // Timing
     private float lastDistanceSendTime = 0f;
-    private float distanceSendInterval = 0.05f; // Send distance every 50ms
+    private float distanceSendInterval = 0.005f; // Send distance every 50ms
 
     void Start()
     {
@@ -109,6 +152,7 @@ public class HapticPenController : MonoBehaviour
 
     void Update()
     {
+        UpdatePressureSmoothing();
         CalculateDistanceToArduino();
         SendDistanceToArduino();
         UpdatePenLength();
@@ -213,113 +257,213 @@ public class HapticPenController : MonoBehaviour
         // Reset distance values
         distanceToSurface = maxDistance;
         distanceToObject = maxDistance;
+        calculatedDistance = 0f; // Default to 0 if raycast is disabled
 
-        // Use RaycastAll to get all hits
-        RaycastHit[] allHits = Physics.RaycastAll(rayOrigin, rayDirection, maxDistance, surfaceLayerMask);
-
-        RaycastHit surfaceHit = new RaycastHit();
-        RaycastHit objectHit = new RaycastHit();
-        bool foundSurface = false;
-        bool foundObject = false;
-        float closestSurfaceDistance = maxDistance;
-        float closestObjectDistance = maxDistance;
-
-        foreach (RaycastHit hit in allHits)
+        if (enableRaycastControl)
         {
-            // Check if this hit is from a grasped object - skip grasped objects
-            bool isGraspedObject = false;
-            if (graspingSystem != null && graspingSystem.IsGrasping)
+            // Use RaycastAll to get all hits
+            RaycastHit[] allHits = Physics.RaycastAll(rayOrigin, rayDirection, maxDistance, surfaceLayerMask);
+
+            RaycastHit surfaceHit = new RaycastHit();
+            RaycastHit objectHit = new RaycastHit();
+            bool foundSurface = false;
+            bool foundObject = false;
+            float closestSurfaceDistance = maxDistance;
+            float closestObjectDistance = maxDistance;
+
+            foreach (RaycastHit hit in allHits)
             {
-                if (graspingSystem.IsGraspedObjectCollider(hit.collider))
+                // Check if this hit is from a grasped object - skip grasped objects
+                bool isGraspedObject = false;
+                if (graspingSystem != null && graspingSystem.IsGrasping)
                 {
-                    isGraspedObject = true;
+                    if (graspingSystem.IsGraspedObjectCollider(hit.collider))
+                    {
+                        isGraspedObject = true;
+                    }
+                }
+
+                if (isGraspedObject) continue;
+
+                // Check if this hit is from the reference surface
+                bool isSurface = false;
+                if (surface != null && hit.transform == surface)
+                {
+                    isSurface = true;
+                }
+
+                // If it's the surface and closer than previous surface hits
+                if (isSurface && hit.distance < closestSurfaceDistance)
+                {
+                    surfaceHit = hit;
+                    foundSurface = true;
+                    closestSurfaceDistance = hit.distance;
+                }
+                // If it's an object (not surface) and closer than previous object hits
+                else if (!isSurface && hit.distance < closestObjectDistance)
+                {
+                    objectHit = hit;
+                    foundObject = true;
+                    closestObjectDistance = hit.distance;
                 }
             }
 
-            if (isGraspedObject) continue;
-
-            // Check if this hit is from the reference surface
-            bool isSurface = false;
-            if (surface != null && hit.transform == surface)
+            // Update distance values
+            float effectiveOffset = distanceOffset;
+            if (enableDirectPressureControl)
             {
-                isSurface = true;
+                effectiveOffset += hybridModeOffset;
             }
 
-            // If it's the surface and closer than previous surface hits
-            if (isSurface && hit.distance < closestSurfaceDistance)
+            if (foundSurface)
             {
-                surfaceHit = hit;
-                foundSurface = true;
-                closestSurfaceDistance = hit.distance;
+                distanceToSurface = surfaceHit.distance + effectiveOffset;
             }
-            // If it's an object (not surface) and closer than previous object hits
-            else if (!isSurface && hit.distance < closestObjectDistance)
+            
+            if (foundObject)
             {
-                objectHit = hit;
-                foundObject = true;
-                closestObjectDistance = hit.distance;
+                distanceToObject = objectHit.distance + effectiveOffset;
             }
-        }
 
-        // Update distance values
-        if (foundSurface)
-        {
-            distanceToSurface = surfaceHit.distance + distanceOffset;
-        }
-        
-        if (foundObject)
-        {
-            distanceToObject = objectHit.distance + distanceOffset;
-        }
-
-        // Calculate the final distance based on your logic
-        if (foundObject && foundSurface)
-        {
-            // Both object and surface found
-            float d_s = distanceToSurface;
-            float d_o = distanceToObject;
-
-            if (d_o < d_s) // Object is closer than surface
+            // Calculate the final distance based on your logic
+            if (foundObject && foundSurface)
             {
-                float difference = d_s - d_o;
-                if (d_s <= difference)
+                // Both object and surface found
+                float d_s = distanceToSurface;
+                float d_o = distanceToObject;
+
+                if (d_o < d_s) // Object is closer than surface
                 {
-                    calculatedDistance = difference;
+                    float difference = d_s - d_o;
+                    if (d_s <= difference)
+                    {
+                        calculatedDistance = difference;
+                    }
+                    else
+                    {
+                        calculatedDistance = d_s;
+                    }
                 }
                 else
                 {
+                    // Object is farther than surface, use surface distance
                     calculatedDistance = d_s;
                 }
             }
+            else if (foundSurface)
+            {
+                // Only surface found
+                calculatedDistance = distanceToSurface;
+            }
             else
             {
-                // Object is farther than surface, use surface distance
-                calculatedDistance = d_s;
+                // No valid hits found
+                calculatedDistance = maxDistance + distanceOffset;
             }
-        }
-        else if (foundSurface)
-        {
-            // Only surface found
-            calculatedDistance = distanceToSurface;
+
+            // Debug visualization
+            if (showDebugRays)
+            {
+                if (foundSurface)
+                {
+                    Debug.DrawRay(rayOrigin, rayDirection * surfaceHit.distance, Color.blue); // Blue for surface
+                }
+                if (foundObject)
+                {
+                    Debug.DrawRay(rayOrigin, rayDirection * objectHit.distance, Color.yellow); // Yellow for objects
+                }
+                if (!foundSurface && !foundObject)
+                {
+                    Debug.DrawRay(rayOrigin, rayDirection * maxDistance, Color.red); // Red for no hit
+                }
+            }
         }
         else
         {
-            // No valid hits found
-            calculatedDistance = maxDistance + distanceOffset;
+             // Raycast Disabled -> Default to 0 (Already set above)
+             distanceToSurface = 0f;
+             distanceToObject = 0f;
         }
 
-        // Apply pressure offset
-        if (currentPressureState == PressureState.High)
+        // Apply Pressure Logic (Velocity Control)
+        // DISABLE OLD LOGIC if new Hybrid Control is enabled
+        if (enablePressureControl && !enableDirectPressureControl)
         {
-            pressureDistanceOffset = distanceShorteningAmount;
+            // Determine separate delta based on pressure state
+            if (smoothedPressure > pressureRetractThreshold)
+            {
+                // Push Hard -> Retract (Increase offset)
+                currentRetractionOffset += retractionSpeed * Time.deltaTime;
+            }
+            else if (smoothedPressure < pressureExtendThreshold)
+            {
+                // Release -> Extend (Decrease offset)
+                currentRetractionOffset -= extensionSpeed * Time.deltaTime;
+            }
+            // Else: Middle Zone -> Hold (Do nothing)
+
+            // Clamp Offset
+            // Min offset is 0 (Full extension)
+            // Max offset is calculatedDistance (Fully retracted to 0)
+            currentRetractionOffset = Mathf.Clamp(currentRetractionOffset, 0f, calculatedDistance);
+
+            // Apply Offset
+            currentDistance = calculatedDistance - currentRetractionOffset;
         }
-        else if (currentPressureState == PressureState.Low)
+        else
         {
-            pressureDistanceOffset = 0;
+            currentDistance = calculatedDistance;
+            currentRetractionOffset = 0f; // Reset if disabled
         }
 
-        // Apply the cumulative offset to the calculated distance
-        currentDistance = Mathf.Max(0, calculatedDistance - pressureDistanceOffset);
+        // Button Control Mode Override
+        // Only active if enabled AND one of the buttons is pressed (and allowed)
+        bool shrinking = enableButtonShrink && buttonCPressed;
+        bool isManualAction = enableButtonControl && (buttonPressed || shrinking);
+        
+        if (isManualAction)
+        {
+            if (!wasManualControlActive)
+            {
+                manualTargetDistance = smoothedDistance; // Latch current position
+                wasManualControlActive = true;
+            }
+
+            if (buttonPressed)
+            {
+                manualTargetDistance += buttonExtendSpeed * Time.deltaTime;
+            }
+            
+            if (shrinking)
+            {
+                manualTargetDistance -= buttonShrinkSpeed * Time.deltaTime;
+            }
+
+            manualTargetDistance = Mathf.Clamp(manualTargetDistance, 0f, maxDistance);
+            currentDistance = manualTargetDistance;
+        }
+        else
+        {
+            wasManualControlActive = false;
+
+            // If Raycast is disabled and Button Control is enabled, 
+            // Hold the last manual position instead of resetting to 0.
+            if (!enableRaycastControl && enableButtonControl)
+            {
+                currentDistance = manualTargetDistance;
+            }
+        }
+
+        // Midair Mode Override (Highest Priority)
+        // Forces the pen to shrink to zero extension (fully retracted)
+        if (enableMidairMode)
+        {
+            currentDistance = 0f;
+            wasManualControlActive = false; // Reset manual control latch so it doesn't get stuck
+        }
+
+        // Clamp to 0 just in case
+        currentDistance = Mathf.Max(0, currentDistance);
 
         // Apply distance smoothing for Arduino communication
         if (enableDistanceSmoothing)
@@ -333,28 +477,14 @@ public class HapticPenController : MonoBehaviour
             smoothedDistance = currentDistance;
         }
 
-        // Debug visualization
-        if (showDebugRays)
-        {
-            if (foundSurface)
-            {
-                Debug.DrawRay(rayOrigin, rayDirection * surfaceHit.distance, Color.blue); // Blue for surface
-            }
-            if (foundObject)
-            {
-                Debug.DrawRay(rayOrigin, rayDirection * objectHit.distance, Color.yellow); // Yellow for objects
-            }
-            if (!foundSurface && !foundObject)
-            {
-                Debug.DrawRay(rayOrigin, rayDirection * maxDistance, Color.red); // Red for no hit
-            }
-        }
+
+        
 
         if (logDistanceData)
         {
             string graspedInfo = (graspingSystem != null && graspingSystem.IsGrasping) ?
                 $" (Ignoring grasped: {graspingSystem.GraspedObject.name})" : "";
-            Debug.Log($"Distance: {currentDistance:F3} | d_s: {distanceToSurface:F3} | d_o: {distanceToObject:F3} | Calculated: {calculatedDistance:F3} | Offset: {pressureDistanceOffset:F3}{graspedInfo}");
+            Debug.Log($"Distance: {currentDistance:F3} | d_s: {distanceToSurface:F3} | d_o: {distanceToObject:F3} | Calculated: {calculatedDistance:F3}{graspedInfo}");
         }
     }
 
@@ -383,33 +513,79 @@ public class HapticPenController : MonoBehaviour
 
         try
         {
-            string command;
+            string command = "";
 
-            // Send the actual distance value instead of encoder counts
-            switch (currentPressureState)
+            if (enableDirectPressureControl)
             {
-                //case PressureState.Medium:
-                //    // Between threshold1 and threshold2 - send 'S'
-                //    command = "S\n";
-                //    break;
+                // --- HYBRID CONTROL LOGIC ---
 
-                //case PressureState.Low:
-                //case PressureState.High:
-                //    command = $"D{currentDistance:F4}\n";
-                //    break;
-                default:
-                    // Send smoothed distance value with 'M' prefix
-                    command = $"M{smoothedDistance*1000:F1}\n";
-                    // Debug.Log($"target distance:{smoothedDistance:F4} (raw:{currentDistance:F4}), encoder:{encoderCount}");
-                    break;
+                // STATE 1: RETRACTION (Pressure >= a)
+                if (pressureReading >= pressureThresholdStart)
+                {
+                    float t = Mathf.InverseLerp(pressureThresholdStart, pressureThresholdMax, pressureReading);
+                    int pwm = (int)Mathf.Lerp(motorSpeedStart, motorSpeedMax, t);
+                    
+                    // Retract using negative direct velocity
+                    command = $"A-{pwm}\n";
+                }
+                // STATE 2: EXTENSION (Pressure near 0)
+                else if (pressureReading <= pressureThresholdExtension)
+                {
+                    // Hybrid Mode: Raycast Tracking with Linear Speed Mapping
+                    
+                    float targetDist = calculatedDistance;
+                    
+                    // Calculate difference (Error)
+                    // realDistance is in mm (from Arduino), convert to meters
+                    float currentRealMeters = realDistance / 1000f;
+                    float diff = targetDist - currentRealMeters;
+
+                    // Debug logic
+                    if (logDistanceData) 
+                    {
+                        Debug.Log($"[Hybrid] Pres: {pressureReading:F1}, Targ: {targetDist:F3}, Real: {currentRealMeters:F3}, Diff: {diff:F4}");
+                    }
+                    
+                    // Condition: Target is further away than current position + threshold
+                    if (diff > extensionThreshold) 
+                    {
+                        // LINEAR MAPPING
+                        // Map 'diff' from [extDistMin, extDistMax] to [extPWMMin, extPWMMax]
+                        float t = Mathf.InverseLerp(extDistMin, extDistMax, diff);
+                        int pwm = (int)Mathf.Lerp(extPWMMin, extPWMMax, t);
+                        
+                        // Send positive Speed command
+                        command = $"A{pwm}\n";
+                    }
+                    else
+                    {
+                         // Near enough, just hold or stop to prevent jitter
+                         command = "S\n";
+                    }
+                }
+                // STATE 3: STOP / DEADBAND (0 < Pressure < a)
+                else
+                {
+                    // Light touch zone - Hold Position
+                    command = "S\n";
+                }
+            }
+            else
+            {
+                // Standard Position Control (Original)
+                // Send smoothed distance value with 'M' prefix
+                command = $"M{smoothedDistance * 1000:F1}\n";
             }
 
-            serialPort.Write(command);
-            lastDistanceSendTime = Time.time;
-
-            if (logSerialData)
+            if (!string.IsNullOrEmpty(command))
             {
-                Debug.Log($"Sent to Arduino: {command.Trim()} (Pressure State: {currentPressureState})");
+                serialPort.Write(command);
+                lastDistanceSendTime = Time.time;
+
+                if (logSerialData)
+                {
+                    Debug.Log($"Sent to Arduino: {command.Trim()}");
+                }
             }
         }
         catch (Exception e)
@@ -417,6 +593,12 @@ public class HapticPenController : MonoBehaviour
             Debug.LogError($"Error sending to Arduino: {e.Message}");
             isConnected = false;
         }
+    }
+
+    // Helper to get extension threshold (adapting to scale)
+    private float extensionOffsetForCheck()
+    {
+        return extensionThreshold;
     }
 
     IEnumerator SerialReadCoroutine()
@@ -450,6 +632,28 @@ public class HapticPenController : MonoBehaviour
         }
     }
 
+    void UpdatePressureSmoothing()
+    {
+        if (enablePressureSmoothing)
+        {
+            // Deadband Logic: Only update target if changed significantly
+            if (Mathf.Abs(pressureReading - targetPressure) > pressureDeadband)
+            {
+                targetPressure = pressureReading;
+            }
+
+            // Asymmetric smoothing: Fast attack (Press), Slow release (Release)
+            float targetTime = (targetPressure > smoothedPressure) ? pressurePressSmoothTime : pressureReleaseSmoothTime;
+            smoothedPressure = Mathf.SmoothDamp(smoothedPressure, targetPressure, ref pressureVelocity, targetTime);
+        }
+        else
+        {
+            smoothedPressure = pressureReading;
+            targetPressure = pressureReading; // Keep sync
+            pressureVelocity = 0f; // Reset velocity when smoothing is disabled
+        }
+    }
+
     void ParseSensorData(string data)
     {
         if (string.IsNullOrEmpty(data)) return;
@@ -471,7 +675,6 @@ public class HapticPenController : MonoBehaviour
                     if (float.TryParse(part.Substring(1), out float pressure))
                     {
                         pressureReading = pressure;
-                        UpdatePressureState();
                     }
                 }
                 else if (part.StartsWith("E"))
@@ -492,7 +695,7 @@ public class HapticPenController : MonoBehaviour
                 {
                     if (int.TryParse(part.Substring(1), out int button))
                     {
-                        buttonPressed = (button == 1);
+                        buttonPressed = (button == 0); // Active LOW (Input Pullup)
                     }
                 }
                 else if (part.StartsWith("H"))
@@ -500,6 +703,13 @@ public class HapticPenController : MonoBehaviour
                     if (int.TryParse(part.Substring(1), out int homeButton))
                     {
                         homeButtonPressed = (homeButton == 1);
+                    }
+                }
+                else if (part.StartsWith("C"))
+                {
+                    if (int.TryParse(part.Substring(1), out int buttonC))
+                    {
+                        buttonCPressed = (buttonC == 0); // Active LOW (Input Pullup)
                     }
                 }
             }
@@ -510,29 +720,7 @@ public class HapticPenController : MonoBehaviour
         }
     }
 
-    void UpdatePressureState()
-    {
-        PressureState previousState = currentPressureState;
 
-        if (pressureReading < pressureThreshold1)
-        {
-            currentPressureState = PressureState.Low;
-        }
-        else if (pressureReading >= pressureThreshold1 && pressureReading <= pressureThreshold2)
-        {
-            currentPressureState = PressureState.Medium;
-        }
-        else // pressureReading > pressureThreshold2
-        {
-            currentPressureState = PressureState.High;
-        }
-
-        // Log state changes
-        if (previousState != currentPressureState && logSerialData)
-        {
-            Debug.Log($"Pressure state changed from {previousState} to {currentPressureState} (Pressure: {pressureReading:F1})");
-        }
-    }
 
     void UpdatePenLength()
     {
@@ -569,8 +757,7 @@ public class HapticPenController : MonoBehaviour
             isConnected = false;
         }
 
-        // Reset pressure offset on reconnect
-        pressureDistanceOffset = 0f;
+
 
         ConnectToArduino();
     }
@@ -603,14 +790,22 @@ public class HapticPenController : MonoBehaviour
         GUILayout.Label($"d_s (Surface): {distanceToSurface:F3}");
         GUILayout.Label($"d_o (Object): {distanceToObject:F3}");
         GUILayout.Label($"Calculated: {calculatedDistance:F3}");
-        GUILayout.Label($"Pressure Offset: {pressureDistanceOffset:F3}");
-        GUILayout.Label($"Pen Length: {penLength:F2}");
-        GUILayout.Label($"Pressure: {pressureReading:F1}");
-        GUILayout.Label($"Pressure State: {currentPressureState}");
+        GUILayout.Label($"Pressure: {pressureReading:F1} (Smoothed: {smoothedPressure:F1})");
         GUILayout.Label($"Encoder: {encoderCount}");
         GUILayout.Label($"Real Distance: {realDistance:F3}");
         GUILayout.Label($"Button: {(buttonPressed ? "Pressed" : "Released")}");
+        GUILayout.Label($"Button C: {(buttonCPressed ? "Pressed" : "Released")}");
         GUILayout.Label($"Home Button: {(homeButtonPressed ? "Pressed" : "Released")}");
+        
+        bool shrinking = enableButtonShrink && buttonCPressed;
+        if (enableButtonControl && (buttonPressed || shrinking)) 
+        {
+            GUILayout.Label("Status: MANUAL CONTROL ACTIVE");
+        }
+        if (enableMidairMode)
+        {
+            GUILayout.Label("Status: MIDAIR MODE ACTIVE");
+        }
 
         GUILayout.Space(10);
 
@@ -632,10 +827,7 @@ public class HapticPenController : MonoBehaviour
             TestSerialSend();
         }
 
-        if (GUILayout.Button("Reset Pressure Offset"))
-        {
-            pressureDistanceOffset = 0f;
-        }
+
 
         GUILayout.EndArea();
     }

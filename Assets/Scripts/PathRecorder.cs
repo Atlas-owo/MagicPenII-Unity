@@ -18,7 +18,10 @@ public class PathRecorder : MonoBehaviour
 
     [Header("Validation")]
     public bool autoSave = true; // If false, strokes are buffered until CommitStroke is called
+    public bool manualControl = false; // If true, capturing is controlled externally via isCapturingOverride
+    public bool isCapturingOverride = false; 
     public int currentTargetId = -1;
+    public int currentTrailTypeId = -1; // ID of the trail definition (type)
 
     private List<PathDataPoint> recordedData = new List<PathDataPoint>();
     private List<PathDataPoint> currentStrokeBuffer = new List<PathDataPoint>(); // Buffer for current stroke
@@ -37,8 +40,9 @@ public class PathRecorder : MonoBehaviour
         public bool isTargetTrace;
         public int strokeId;
         public int targetId; 
+        public int trailTypeId; 
 
-        public PathDataPoint(float timestamp, Vector3 position, Vector3 rotation, bool isTargetTrace, int strokeId, int targetId)
+        public PathDataPoint(float timestamp, Vector3 position, Vector3 rotation, bool isTargetTrace, int strokeId, int targetId, int trailTypeId)
         {
             this.timestamp = timestamp;
             this.position = position;
@@ -46,6 +50,7 @@ public class PathRecorder : MonoBehaviour
             this.isTargetTrace = isTargetTrace;
             this.strokeId = strokeId;
             this.targetId = targetId;
+            this.trailTypeId = trailTypeId;
         }
     }
 
@@ -90,13 +95,21 @@ public class PathRecorder : MonoBehaviour
 
             // Determine if we should be capturing data right now
             bool isCapturing = false;
-            if (penController != null)
+            
+            if (manualControl)
             {
-                isCapturing = !penController.buttonPressed;
+                isCapturing = isCapturingOverride;
             }
             else
             {
-                isCapturing = true;
+                if (penController != null)
+                {
+                    isCapturing = penController.buttonPressed;
+                }
+                else
+                {
+                    isCapturing = true;
+                }
             }
 
             // Detect new stroke (rising edge)
@@ -131,7 +144,8 @@ public class PathRecorder : MonoBehaviour
                     targetObject.eulerAngles,
                     isTargetTrace,
                     currentStrokeId, 
-                    currentTargetId
+                    currentTargetId,
+                    currentTrailTypeId
                 ));
             }
         }
@@ -139,11 +153,17 @@ public class PathRecorder : MonoBehaviour
 
     // Manual Control Methods
 
-    public void StartNewStroke(int targetId)
+    public void StartNewStroke(int targetId, int typeId = -1)
     {
         currentStrokeBuffer.Clear();
         currentTargetId = targetId;
+        if (typeId != -1) currentTrailTypeId = typeId;
         currentStrokeId++; // Increment ID for the new stroke
+    }
+    
+    public void SetCurrentTrailType(int typeId)
+    {
+        currentTrailTypeId = typeId;
     }
 
     public void CommitStroke()
@@ -160,7 +180,7 @@ public class PathRecorder : MonoBehaviour
 
             recordedData.AddRange(currentStrokeBuffer);
             AppendDataToFile(currentStrokeBuffer);
-            Debug.Log($"PathRecorder: Stroke {currentStrokeId} (Target {currentTargetId}) Saved. ({currentStrokeBuffer.Count} points)");
+            Debug.Log($"PathRecorder: Stroke {currentStrokeId} (Target {currentTargetId}, Type {currentTrailTypeId}) Saved. ({currentStrokeBuffer.Count} points)");
         }
         currentStrokeBuffer.Clear();
     }
@@ -173,7 +193,7 @@ public class PathRecorder : MonoBehaviour
         }
         currentStrokeBuffer.Clear();
     }
-
+    
     /// <summary>
     /// Starts a new recording session. Clears previous data.
     /// </summary>
@@ -247,7 +267,7 @@ public class PathRecorder : MonoBehaviour
         {
             using (StreamWriter writer = new StreamWriter(currentSessionFilePath, false))
             {
-                writer.WriteLine("Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID");
+                writer.WriteLine("Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID,TrailTypeID");
             }
         }
         catch (Exception e)
@@ -266,7 +286,7 @@ public class PathRecorder : MonoBehaviour
             {
                 foreach (var point in points)
                 {
-                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9}",
+                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}",
                         point.timestamp,
                         point.position.x,
                         point.position.y,
@@ -276,7 +296,8 @@ public class PathRecorder : MonoBehaviour
                         point.rotation.z,
                         point.isTargetTrace,
                         point.strokeId,
-                        point.targetId);
+                        point.targetId,
+                        point.trailTypeId);
                     writer.WriteLine(line);
                 }
             }
