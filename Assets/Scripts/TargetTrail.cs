@@ -3,12 +3,14 @@ using UnityEngine;
 
 [RequireComponent(typeof(MeshFilter))]
 [RequireComponent(typeof(MeshRenderer))]
-public class TargetTrail : MonoBehaviour
+public class TargetTrail : MonoBehaviour, ITrailEvaluator
 {
     public enum TrailShape
     {
         Straight,
-        SineWave
+        SineWave,
+        Nurbs,
+        Circle
     }
 
     [Header("Configuration")]
@@ -21,6 +23,15 @@ public class TargetTrail : MonoBehaviour
     public float amplitudeStart = 0.05f;
     public float amplitudeEnd = 0.1f;
     public float periods = 2.0f;
+
+    [Header("NURBS / Plateau Settings")]
+    [Range(0.05f, 0.9f)]
+    public float nurbsPlateauWidth = 0.3f;
+    [Range(0.01f, 0.2f)]
+    public float nurbsTransitionLength = 0.05f;
+    [Range(1.0f, 10.0f)]
+    public float nurbsTransitionSteepness = 5.0f;
+    public float nurbsAmplitude = 0.05f;
 
     [Header("Visuals")]
     public Color trailColor = new Color(0, 0, 0, 0.5f); // Translucent Black
@@ -140,6 +151,7 @@ public class TargetTrail : MonoBehaviour
         if (pathRecorder != null)
         {
             pathRecorder.SetCurrentTrailType(trailTypeId);
+            pathRecorder.SetEvaluator(this); // Set self as evaluator
             pathRecorder.manualControl = (manager.interactionMode == TargetTrailManager.InteractionMode.AutoTouch);
             pathRecorder.isCapturingOverride = false;
         }
@@ -465,6 +477,7 @@ public class TargetTrail : MonoBehaviour
         float dist = Vector3.Distance(startPoint, endPoint);
         int curveSegments = Mathf.CeilToInt(dist * 200); // Increased resolution (0.5cm)
         if (trailShape == TrailShape.SineWave) curveSegments *= 2; 
+        if (trailShape == TrailShape.Nurbs) curveSegments *= 4; // Higher resolution for sharp transitions
         if (curveSegments < 2) curveSegments = 2;
 
         int vertCount = curveSegments * radialSegments;
@@ -559,7 +572,7 @@ public class TargetTrail : MonoBehaviour
         {
             return straightPos;
         }
-        else // SineWave
+        else if (trailShape == TrailShape.SineWave)
         {
             // Baseline direction
             Vector3 baseline = endPoint - startPoint;
@@ -582,7 +595,23 @@ public class TargetTrail : MonoBehaviour
 
             return straightPos + waveUp * currentAmplitude * sineValue;
         }
+        else if (trailShape == TrailShape.Nurbs)
+        {
+            // Baseline direction
+            Vector3 baseline = endPoint - startPoint;
+            Vector3 baselineDir = baseline.normalized;
+
+            // Define "Up" 
+            Vector3 waveUp = Vector3.Cross(baselineDir, Vector3.forward).normalized;
+            if (waveUp.sqrMagnitude < 0.001f) waveUp = Vector3.up;
+
+            float height = CalculateNurbsHeight(t);
+            return straightPos + waveUp * height;
+        }
+
+        return straightPos;
     }
+
 
     private void SetMaterial(GameObject obj, Color color)
     {
@@ -603,5 +632,110 @@ public class TargetTrail : MonoBehaviour
         mat.DisableKeyword("_ALPHAPREMULTIPLY_ON");
         mat.renderQueue = 3000;
         mat.color = color;
+    }
+
+    private float CalculateNurbsHeight(float t)
+    {
+        // Convert to centered coordinate [-0.5, 0.5]
+        float tCentered = t - 0.5f;
+        float distFromCenter = Mathf.Abs(tCentered);
+
+        float plateauHalfWidth = nurbsPlateauWidth * 0.5f;
+        float transitionEnd = plateauHalfWidth + nurbsTransitionLength;
+
+        float heightValue;
+
+        if (distFromCenter <= plateauHalfWidth)
+        {
+            heightValue = 1.0f;
+        }
+        else if (distFromCenter < transitionEnd)
+        {
+            float p = (distFromCenter - plateauHalfWidth) / nurbsTransitionLength;
+            heightValue = GeneralizedSmoothstep(1.0f - p, nurbsTransitionSteepness);
+        }
+        else
+        {
+            heightValue = 0.0f;
+        }
+
+        return nurbsAmplitude * heightValue;
+    }
+
+    // --- ITrailEvaluator Implementation ---
+
+    public Vector3 GetClosestPointOnCenterline(Vector3 position)
+    {
+        // High Precision Iterative Search
+        
+        // 1. Coarse Search (Global)
+        int samples = 100; // Increased from 50
+        float bestT = 0f;
+        float bestDistSq = float.MaxValue;
+        
+        for (int i = 0; i <= samples; i++)
+        {
+            float t = (float)i / samples;
+            Vector3 pt = GetPointOnPath(t);
+            float dSq = (position - pt).sqrMagnitude;
+            if (dSq < bestDistSq)
+            {
+                bestDistSq = dSq;
+                bestT = t;
+            }
+        }
+        
+        // 2. Refinement Search 1 (Local Scan +/- 1%)
+        float step = 1f / samples; // 0.01
+        float range = step; 
+        float minT = Mathf.Max(0f, bestT - range);
+        float maxT = Mathf.Min(1f, bestT + range);
+        int refinementSteps = 20;
+        
+        for (int i = 0; i <= refinementSteps; i++)
+        {
+            float t = Mathf.Lerp(minT, maxT, (float)i / refinementSteps);
+            Vector3 pt = GetPointOnPath(t);
+            float dSq = (position - pt).sqrMagnitude;
+            if (dSq < bestDistSq)
+            {
+                bestDistSq = dSq;
+                bestT = t; // Update bestT for next pass
+            }
+        }
+        
+        // 3. Refinement Search 2 (Micro Scan +/- 0.1%)
+        float microRange = range / 10f; // 0.001
+        minT = Mathf.Max(0f, bestT - microRange);
+        maxT = Mathf.Min(1f, bestT + microRange);
+        refinementSteps = 20; // Another 20 samples in very small window
+        
+        for (int i = 0; i <= refinementSteps; i++)
+        {
+            float t = Mathf.Lerp(minT, maxT, (float)i / refinementSteps);
+            Vector3 pt = GetPointOnPath(t);
+            float dSq = (position - pt).sqrMagnitude;
+            if (dSq < bestDistSq)
+            {
+                bestDistSq = dSq;
+                bestT = t;
+            }
+        }
+
+        return GetPointOnPath(bestT);
+    }
+    
+    // ... existing ...
+
+    private float GeneralizedSmoothstep(float t, float steepness)
+    {
+        t = Mathf.Clamp01(t);
+        float smoothed = t * t * (3.0f - 2.0f * t);
+        if (steepness > 1.0f)
+        {
+            float centered = smoothed - 0.5f;
+            smoothed = 0.5f + Mathf.Sign(centered) * Mathf.Pow(Mathf.Abs(centered * 2.0f), 1.0f / steepness) * 0.5f;
+        }
+        return smoothed;
     }
 }

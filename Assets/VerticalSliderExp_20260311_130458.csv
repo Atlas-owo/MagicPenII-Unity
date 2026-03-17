@@ -1,0 +1,5 @@
+TrialNumber,Condition,Direction,TargetHeight(mm),FinalHeight(mm),Error(mm),CompletionTime(s)
+1,Mid-air,Down,40.0,40.29,0.29,4.920
+2,Mid-air,Down,30.0,30.70,0.70,2.021
+3,Mid-air,Up,30.0,22.04,7.96,1.198
+4,Mid-air,Down,10.0,10.26,0.26,3.443

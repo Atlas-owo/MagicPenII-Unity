@@ -4,6 +4,12 @@ using UnityEngine;
 
 public class TargetTrailManager : MonoBehaviour
 {
+    public enum SessionMode
+    {
+        Standard,
+        Hybrid
+    }
+
     public enum InteractionMode
     {
         ButtonPress,
@@ -11,22 +17,32 @@ public class TargetTrailManager : MonoBehaviour
     }
 
     [Header("Settings")]
+    public SessionMode sessionMode = SessionMode.Standard;
     public InteractionMode interactionMode = InteractionMode.ButtonPress;
+    
+    // Legacy settings (apply to both or primarily Standard)
     public float delayBetweenTrails = 1.0f;
     public AudioClip successSound;
+    public bool randomizeOrder = true;
+
+    [Header("Rotation Settings")]
+    public bool enableRotatedVariations = false;
+    public Transform rotationCenter;
+    public int rotationCount = 8;
+    public float rotationAngle = 45.0f;
 
     [Header("Debug / Testing")]
     public Transform debugStartPoint;
     public Transform debugEndPoint;
 
     [Header("References")]
-    [Tooltip("The Transform representing the pen tip. If null, trails will try to find HapticPenController automatically.")]
     public Transform penTip;
 
     private List<TargetTrail> trails = new List<TargetTrail>();
     private int currentTrailIndex = -1;
     private PathRecorder pathRecorder;
 
+    // --- INPUT MODE CONFIGURATION (Standard) ---
     [System.Serializable]
     public struct TrailDefinition
     {
@@ -36,52 +52,80 @@ public class TargetTrailManager : MonoBehaviour
         public float amplitudeStart; // e.g. 0.05
         public float amplitudeEnd;   // e.g. 0.1
         public float periods;        // e.g. 2
+        
+        // NURBS / Plateau Settings (Only for TargetTrail Nurbs)
+        public float nurbsPlateauWidth;      // Default 0.3
+        public float nurbsTransitionLength;  // Default 0.05
+        public float nurbsTransitionSteepness; // Default 5.0
+        public float nurbsAmplitude;         // Default 0.05
     }
 
-    [Header("Trail Configuration")]
+    [Header("Input Configuration")]
     public List<TrailDefinition> preDefinedTrails = new List<TrailDefinition>();
+
     public int repeatsPerTrail = 3;
 
     private void Start()
     {
         pathRecorder = FindObjectOfType<PathRecorder>();
+        GenerateInputTasks();
 
-        // Generate Task List (Indices of definitions)
-        List<int> taskIndices = new List<int>();
-        for (int i = 0; i < preDefinedTrails.Count; i++)
+        Debug.Log($"TargetTrailManager: Generated {trails.Count} trails.");
+
+        // Start the sequence
+        StartTrails();
+    }
+
+     private struct TaskDef
+     {
+         public int defIndex;
+         public int rotationStep;
+     }
+
+    private void GenerateInputTasks()
+    {
+         // Generate Task List
+        List<TaskDef> tasks = new List<TaskDef>();
+        
+        int rotations = enableRotatedVariations ? rotationCount : 1;
+
+        for (int rStep = 0; rStep < rotations; rStep++)
         {
-            for (int r = 0; r < repeatsPerTrail; r++)
+            for (int i = 0; i < preDefinedTrails.Count; i++)
             {
-                taskIndices.Add(i);
+                for (int r = 0; r < repeatsPerTrail; r++)
+                {
+                    tasks.Add(new TaskDef { defIndex = i, rotationStep = rStep });
+                }
             }
         }
         
-        // Shuffle Tasks (Fisher-Yates)
-        // Only shuffle if we have multiple tasks
-        if (taskIndices.Count > 1)
+        // Shuffle Tasks
+        if (randomizeOrder && tasks.Count > 1)
         {
             UnityEngine.Random.InitState((int)System.DateTime.Now.Ticks);
-            int n = taskIndices.Count;
+            int n = tasks.Count;
             while (n > 1)
             {
                 n--;
                 int k = UnityEngine.Random.Range(0, n + 1);
-                int value = taskIndices[k];
-                taskIndices[k] = taskIndices[n];
-                taskIndices[n] = value;
+                var value = tasks[k];
+                tasks[k] = tasks[n];
+                tasks[n] = value;
             }
         }
 
-        // 1. Create trails based on Shuffled Task List
-        for (int i = 0; i < taskIndices.Count; i++)
+        // Create Trails
+        for (int i = 0; i < tasks.Count; i++)
         {
-            int defIndex = taskIndices[i];
+            TaskDef task = tasks[i];
+            int defIndex = task.defIndex;
             TrailDefinition def = preDefinedTrails[defIndex];
 
-            if (def.startTransform != null && def.endTransform != null)
-            {
-                // Create object
-                GameObject trailObj = new GameObject($"TargetTrail_Inst{i}_Type{defIndex}");
+             if (def.startTransform != null && def.endTransform != null)
+             {
+                int rotAngleInt = (int)(task.rotationStep * rotationAngle);
+                GameObject trailObj = new GameObject($"TargetTrail_Inst{i}_Type{defIndex}_Rot{rotAngleInt}");
                 trailObj.transform.SetParent(transform);
                 
                 TargetTrail trail = trailObj.AddComponent<TargetTrail>();
@@ -94,26 +138,44 @@ public class TargetTrailManager : MonoBehaviour
                     trail.amplitudeEnd = def.amplitudeEnd;
                     trail.periods = def.periods > 0 ? def.periods : 2.0f; 
                 }
+                else if (def.shape == TargetTrail.TrailShape.Nurbs)
+                {
+                    trail.nurbsPlateauWidth = def.nurbsPlateauWidth > 0 ? def.nurbsPlateauWidth : 0.3f;
+                    trail.nurbsTransitionLength = def.nurbsTransitionLength > 0 ? def.nurbsTransitionLength : 0.05f;
+                    trail.nurbsTransitionSteepness = def.nurbsTransitionSteepness > 0 ? def.nurbsTransitionSteepness : 5.0f;
+                    trail.nurbsAmplitude = def.nurbsAmplitude != 0 ? def.nurbsAmplitude : 0.05f; 
+                }
 
                 if (successSound != null) trail.successSound = successSound;
 
-                // Initialize: Instance ID = i, Type ID = defIndex
-                trail.Initialize(def.startTransform.position, def.endTransform.position, this, penTip, i, defIndex);
+                // Calculate Rotated Positions
+                Vector3 startPos = def.startTransform.position;
+                Vector3 endPos = def.endTransform.position;
+
+                if (enableRotatedVariations)
+                {
+                    Vector3 center = rotationCenter != null ? rotationCenter.position : Vector3.zero;
+                    float currentAngle = task.rotationStep * rotationAngle;
+                    Quaternion rot = Quaternion.Euler(0, currentAngle, 0);
+
+                    startPos = rot * (startPos - center) + center;
+                    endPos = rot * (endPos - center) + center;
+                }
+
+                trail.Initialize(startPos, endPos, this, penTip, i, defIndex);
                 trails.Add(trail);
-            }
+             }
         }
 
-        // 2. Add debug trail if configured (optional fallback, only if no specific trails)
+        // Debug Fallback
         if (trails.Count == 0 && debugStartPoint != null && debugEndPoint != null)
         {
             AddStraightTrail(debugStartPoint.position, debugEndPoint.position);
         }
-
-        Debug.Log($"TargetTrailManager: Generated {trails.Count} trails ({preDefinedTrails.Count} types x {repeatsPerTrail} repeats).");
-
-        // 3. Start the sequence
-        StartTrails();
     }
+
+
+
 
     private void Update()
     {
@@ -141,7 +203,7 @@ public class TargetTrailManager : MonoBehaviour
 
     public void StartTrails()
     {
-        if (trails.Count == 0) return;
+         if (trails.Count == 0) return;
         
         // Start Recording Session
         if (pathRecorder != null)
@@ -201,6 +263,10 @@ public class TargetTrailManager : MonoBehaviour
         public float amplitudeStart;
         public float amplitudeEnd;
         public float periods;
+        public float nurbsPlateauWidth;
+        public float nurbsTransitionLength;
+        public float nurbsTransitionSteepness;
+        public float nurbsAmplitude;
     }
 
     [ContextMenu("Export Trail Definitions")]
@@ -221,6 +287,11 @@ public class TargetTrailManager : MonoBehaviour
                 exportItem.amplitudeStart = def.amplitudeStart;
                 exportItem.amplitudeEnd = def.amplitudeEnd;
                 exportItem.periods = def.periods > 0 ? def.periods : 2.0f; // Ensure default matches logic
+                exportItem.nurbsPlateauWidth = def.nurbsPlateauWidth;
+                exportItem.nurbsTransitionLength = def.nurbsTransitionLength;
+                exportItem.nurbsTransitionSteepness = def.nurbsTransitionSteepness;
+                exportItem.nurbsTransitionSteepness = def.nurbsTransitionSteepness;
+                exportItem.nurbsAmplitude = def.nurbsAmplitude;
 
                 exportData.definitions.Add(exportItem);
             }

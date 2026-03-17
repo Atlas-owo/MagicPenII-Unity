@@ -18,7 +18,6 @@ public class HapticPenController : MonoBehaviour
     public Transform surface; // The surface to measure distance to
 
     [Header("Distance Measurement")]
-    public bool enableRaycastControl = true; // If false, defaults to 0 distance
     public LayerMask surfaceLayerMask = 1; // Which layers count as surface
     public float maxDistance = 1f; // Maximum raycast distance
     [Range(-1.0f, 1.0f)]
@@ -28,6 +27,11 @@ public class HapticPenController : MonoBehaviour
 
     public float valueOffset = 0.05f;
     public int maxEncoderCount = 3000;
+
+    [Header("Control Mode")]
+    public bool enableRaycastControl = true; // If false, defaults to 0 distance
+    public bool enableDirectPressureControl = false;
+    public bool enableMidairMode = false; // Forces pen to 0 extension
 
     [Header("Multiple Objects")]
     public List<Transform> surfaceObjects = new List<Transform>(); // List of all objects to check distance to
@@ -54,7 +58,6 @@ public class HapticPenController : MonoBehaviour
     public float pressureDeadband = 2.0f; // Hysteresis threshold
 
     [Header("Hybrid Pressure Speed Control")]
-    public bool enableDirectPressureControl = false;
     [Tooltip("Pressure value (a) to start retraction mode")]
     public float pressureThresholdStart = 10f; 
     [Tooltip("Pressure value (e) below which extension is allowed (Zero Pressure Threshold)")]
@@ -67,6 +70,8 @@ public class HapticPenController : MonoBehaviour
     public int motorSpeedMax = 255;
     [Tooltip("Minimum extension distance (y) required to trigger extension command")]
     public float extensionThreshold = 0.002f; // 2mm
+    [Tooltip("Maximum physical extension distance (m) of the pen hardware")]
+    public float maxPhysicalExtension = 0.07f; // 75mm
 
     [Range(-0.01f, 0.01f)]
     public float hybridModeOffset = 0f; // Small offset added when Hybrid Mode is active
@@ -95,8 +100,7 @@ public class HapticPenController : MonoBehaviour
     private float manualTargetDistance = 0f;
     private bool wasManualControlActive = false;
 
-    [Header("Midair Mode")]
-    public bool enableMidairMode = false; // Forces pen to 0 extension
+
 
     [Header("Debug")]
     public bool showDebugRays = true;
@@ -538,29 +542,40 @@ public class HapticPenController : MonoBehaviour
                     // Calculate difference (Error)
                     // realDistance is in mm (from Arduino), convert to meters
                     float currentRealMeters = realDistance / 1000f;
-                    float diff = targetDist - currentRealMeters;
 
                     // Debug logic
                     if (logDistanceData) 
                     {
-                        Debug.Log($"[Hybrid] Pres: {pressureReading:F1}, Targ: {targetDist:F3}, Real: {currentRealMeters:F3}, Diff: {diff:F4}");
+                        Debug.Log($"[Hybrid] Pres: {pressureReading:F1}, Targ: {targetDist:F3}, Real: {currentRealMeters:F3}");
                     }
-                    
-                    // Condition: Target is further away than current position + threshold
-                    if (diff > extensionThreshold) 
+
+                    // Maximum physical extension limit: stop if already at hardware max
+                    if (currentRealMeters >= maxPhysicalExtension)
                     {
-                        // LINEAR MAPPING
-                        // Map 'diff' from [extDistMin, extDistMax] to [extPWMMin, extPWMMax]
-                        float t = Mathf.InverseLerp(extDistMin, extDistMax, diff);
-                        int pwm = (int)Mathf.Lerp(extPWMMin, extPWMMax, t);
-                        
-                        // Send positive Speed command
-                        command = $"A{pwm}\n";
+                        command = "S\n";
                     }
                     else
                     {
-                         // Near enough, just hold or stop to prevent jitter
-                         command = "S\n";
+                        // Clamp target distance to physical max to prevent over-extension
+                        targetDist = Mathf.Min(targetDist, maxPhysicalExtension);
+                        float diff = targetDist - currentRealMeters;
+
+                        // Condition: Target is further away than current position + threshold
+                        if (diff > extensionThreshold) 
+                        {
+                            // LINEAR MAPPING
+                            // Map 'diff' from [extDistMin, extDistMax] to [extPWMMin, extPWMMax]
+                            float t = Mathf.InverseLerp(extDistMin, extDistMax, diff);
+                            int pwm = (int)Mathf.Lerp(extPWMMin, extPWMMax, t);
+                            
+                            // Send positive Speed command
+                            command = $"A{pwm}\n";
+                        }
+                        else
+                        {
+                            // Near enough, just hold or stop to prevent jitter
+                            command = "S\n";
+                        }
                     }
                 }
                 // STATE 3: STOP / DEADBAND (0 < Pressure < a)

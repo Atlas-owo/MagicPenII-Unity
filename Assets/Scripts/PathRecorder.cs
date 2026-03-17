@@ -4,6 +4,12 @@ using System.IO;
 using System.Text;
 using UnityEngine;
 
+// Interface for trails to provide distance calculation
+public interface ITrailEvaluator
+{
+    Vector3 GetClosestPointOnCenterline(Vector3 position);
+}
+
 public class PathRecorder : MonoBehaviour
 {
     [Header("Recording Settings")]
@@ -11,6 +17,9 @@ public class PathRecorder : MonoBehaviour
     [Tooltip("Master switch for the recording session. When true, data can be captured.")]
     public bool isRecording = false;
     public HapticPenController penController;
+    
+    // Evaluator reference
+    private ITrailEvaluator currentEvaluator;
 
     [Header("Data")]
     [Tooltip("If true, the current data point is considered part of a valid target trace.")]
@@ -22,6 +31,7 @@ public class PathRecorder : MonoBehaviour
     public bool isCapturingOverride = false; 
     public int currentTargetId = -1;
     public int currentTrailTypeId = -1; // ID of the trail definition (type)
+    public int currentSurfaceType = -1; // New: Surface Type (0=Flat, 1=Nurbs, 2=Sine, -1=None)
 
     private List<PathDataPoint> recordedData = new List<PathDataPoint>();
     private List<PathDataPoint> currentStrokeBuffer = new List<PathDataPoint>(); // Buffer for current stroke
@@ -41,8 +51,11 @@ public class PathRecorder : MonoBehaviour
         public int strokeId;
         public int targetId; 
         public int trailTypeId; 
+        public int surfaceType; // New
+        public float deviation; // Magnitude of error
+        public Vector3 errorVector; // Vector from ClosestPoint to CurrentPosition (represents x,y,z error)
 
-        public PathDataPoint(float timestamp, Vector3 position, Vector3 rotation, bool isTargetTrace, int strokeId, int targetId, int trailTypeId)
+        public PathDataPoint(float timestamp, Vector3 position, Vector3 rotation, bool isTargetTrace, int strokeId, int targetId, int trailTypeId, int surfaceType, float deviation, Vector3 errorVector)
         {
             this.timestamp = timestamp;
             this.position = position;
@@ -51,7 +64,17 @@ public class PathRecorder : MonoBehaviour
             this.strokeId = strokeId;
             this.targetId = targetId;
             this.trailTypeId = trailTypeId;
+            this.surfaceType = surfaceType;
+            this.deviation = deviation;
+            this.errorVector = errorVector;
         }
+    }
+
+    // ... [Start, Update methods need modification for loop] ...
+    
+    public void SetEvaluator(ITrailEvaluator evaluator)
+    {
+        currentEvaluator = evaluator;
     }
 
     private void Start()
@@ -138,6 +161,20 @@ public class PathRecorder : MonoBehaviour
             if (isCapturing)
             {
                 float time = Time.time - startTime;
+                
+                // Calculate Deviation and Error Vector
+                float currentDev = -1f;
+                Vector3 errorVec = Vector3.zero;
+                
+                if (currentEvaluator != null)
+                {
+                    Vector3 closestPoint = currentEvaluator.GetClosestPointOnCenterline(targetObject.position);
+                    // Error Vector = Position - ClosestPoint
+                    // This creates a vector pointing FROM the ideal path TO the pen.
+                    errorVec = targetObject.position - closestPoint;
+                    currentDev = errorVec.magnitude;
+                }
+                
                 currentStrokeBuffer.Add(new PathDataPoint(
                     time,
                     targetObject.position,
@@ -145,7 +182,10 @@ public class PathRecorder : MonoBehaviour
                     isTargetTrace,
                     currentStrokeId, 
                     currentTargetId,
-                    currentTrailTypeId
+                    currentTrailTypeId,
+                    currentSurfaceType, // Pass current surface type
+                    currentDev,
+                    errorVec
                 ));
             }
         }
@@ -153,11 +193,12 @@ public class PathRecorder : MonoBehaviour
 
     // Manual Control Methods
 
-    public void StartNewStroke(int targetId, int typeId = -1)
+    public void StartNewStroke(int targetId, int typeId = -1, int surfType = -1)
     {
         currentStrokeBuffer.Clear();
         currentTargetId = targetId;
         if (typeId != -1) currentTrailTypeId = typeId;
+        currentSurfaceType = surfType; // Update surface type
         currentStrokeId++; // Increment ID for the new stroke
     }
     
@@ -267,7 +308,7 @@ public class PathRecorder : MonoBehaviour
         {
             using (StreamWriter writer = new StreamWriter(currentSessionFilePath, false))
             {
-                writer.WriteLine("Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID,TrailTypeID");
+                writer.WriteLine("Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID,TrailTypeID,SurfaceTypeID,DistToCenterline,Error_X,Error_Y,Error_Z");
             }
         }
         catch (Exception e)
@@ -286,7 +327,7 @@ public class PathRecorder : MonoBehaviour
             {
                 foreach (var point in points)
                 {
-                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}",
+                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15}",
                         point.timestamp,
                         point.position.x,
                         point.position.y,
@@ -297,7 +338,12 @@ public class PathRecorder : MonoBehaviour
                         point.isTargetTrace,
                         point.strokeId,
                         point.targetId,
-                        point.trailTypeId);
+                        point.trailTypeId,
+                        point.surfaceType, // Add SurfaceType
+                        point.deviation,
+                        point.errorVector.x,
+                        point.errorVector.y,
+                        point.errorVector.z);
                     writer.WriteLine(line);
                 }
             }
