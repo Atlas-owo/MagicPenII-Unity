@@ -95,6 +95,10 @@ public class HybridTrailManager : MonoBehaviour
     public float sineOverlayFrequency = 10.0f;
     public bool sineOverlayUseNormal = false;
 
+    [Header("Testing & State")]
+    public KeyCode skipKey = KeyCode.Space;
+    public bool isFinished = false;
+
     private List<HybridTargetTrail> hybridTrails = new List<HybridTargetTrail>();
     private int currentTrailIndex = -1;
     private PathRecorder pathRecorder;
@@ -259,12 +263,30 @@ public class HybridTrailManager : MonoBehaviour
         {
             StartTrails();
         }
+
+        if (Input.GetKeyDown(skipKey))
+        {
+            SkipCurrentTrail();
+        }
+    }
+
+    public void SkipCurrentTrail()
+    {
+        if (currentTrailIndex >= 0 && currentTrailIndex < hybridTrails.Count)
+        {
+            hybridTrails[currentTrailIndex].gameObject.SetActive(false);
+            Debug.Log($"HybridTrailManager: Skipped Hybrid trail {currentTrailIndex}");
+            currentTrailIndex++;
+            ActivateTrail(currentTrailIndex);
+        }
     }
 
     public void StartTrails()
     {
         if (hybridTrails.Count == 0) return;
         
+        isFinished = false;
+
         // Start Recording Session
         if (pathRecorder != null)
         {
@@ -286,6 +308,7 @@ public class HybridTrailManager : MonoBehaviour
         {
             Debug.Log("HybridTrailManager: All hybrid trails completed.");
             if (pathRecorder != null) pathRecorder.StopRecording();
+            isFinished = true;
         }
     }
 

@@ -59,7 +59,7 @@
     <UnityVersion>2022.3.34f1c1</UnityVersion>
   </PropertyGroup>
   <ItemGroup>
-    <Analyzer Include="C:\Users\32785\.vscode\extensions\visualstudiotoolsforunity.vstuc-1.2.0\Analyzers\Microsoft.Unity.Analyzers.dll" />
+    <Analyzer Include="C:\Users\32785\.vscode\extensions\visualstudiotoolsforunity.vstuc-1.2.1\Analyzers\Microsoft.Unity.Analyzers.dll" />
     <Analyzer Include="D:\Program Files\Unity\Hub\Editor\2022.3.34f1c1\Editor\Data\Tools\Unity.SourceGenerators\Unity.SourceGenerators.dll" />
     <Analyzer Include="D:\Program Files\Unity\Hub\Editor\2022.3.34f1c1\Editor\Data\Tools\Unity.SourceGenerators\Unity.Properties.SourceGenerator.dll" />
   </ItemGroup>
@@ -68,8 +68,10 @@
     <Compile Include="Assets\Scripts\ZAxisControlTester.cs" />
     <Compile Include="Assets\Scripts\DataRecorder.cs" />
     <Compile Include="Assets\Scripts\SingleAxisMovement.cs" />
+    <Compile Include="Assets\Scripts\DynamicSineTrailManager.cs" />
     <Compile Include="Assets\Scripts\WireframeMesh.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\FileWriter.cs" />
+    <Compile Include="Assets\Scripts\PathDependentHybridTrail.cs" />
     <Compile Include="Assets\Scripts\ExtrusionController.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\TestManager.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\StaircaseProcedure.cs" />
@@ -89,6 +91,7 @@
     <Compile Include="Assets\Scripts\DistanceCalculator.cs" />
     <Compile Include="Assets\Scripts\HapticPenGraspingSystem.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\PythonProcess.cs" />
+    <Compile Include="Assets\Scripts\DynamicSineTrail.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\MultipleTestManager.cs" />
     <Compile Include="Assets\Scripts\HybridTrailManager.cs" />
     <Compile Include="Assets\Scripts\HapticPenControllerRefactored.cs" />
@@ -108,6 +111,7 @@
     <Compile Include="Assets\SimpleXZFollower.cs" />
     <Compile Include="Assets\optitrack-unity\OptiTrack\Scripts\OptitrackSkeletonAnimator.cs" />
     <Compile Include="Assets\Scripts\CDRatioTestController.cs" />
+    <Compile Include="Assets\Scripts\PathDependentHybridManager.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\TrialData.cs" />
     <Compile Include="Assets\Scripts\CDRatioManipulator.cs" />
     <Compile Include="Assets\StaircaseProcedure\Scripts\TresholdCalculationClass.cs" />
@@ -122,6 +126,7 @@
   <ItemGroup>
     <None Include="Assets\optitrack-unity\OptiTrack\Plugins\x86_64\NatNetLib.dll" />
     <None Include="Assets\Shader\WireframeBarycentric.shader" />
+    <None Include="Assets\optitrack-unity\OptiTrack\Scripts\OptitrackRigidBody_bak.txt" />
     <None Include="Assets\optitrack-unity\OptiTrack\README_OptiTrack_Unity.txt" />
   </ItemGroup>
   <ItemGroup>

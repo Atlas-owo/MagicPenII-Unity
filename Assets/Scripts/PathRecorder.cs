@@ -12,6 +12,10 @@ public interface ITrailEvaluator
 
 public class PathRecorder : MonoBehaviour
 {
+    [Header("Participant Info")]
+    public string userId = "P00";
+    public string condition = "";
+
     [Header("Recording Settings")]
     public Transform targetObject;
     [Tooltip("Master switch for the recording session. When true, data can be captured.")]
@@ -127,7 +131,7 @@ public class PathRecorder : MonoBehaviour
             {
                 if (penController != null)
                 {
-                    isCapturing = penController.buttonPressed;
+                    isCapturing = penController.buttonCPressed;
                 }
                 else
                 {
@@ -308,7 +312,7 @@ public class PathRecorder : MonoBehaviour
         {
             using (StreamWriter writer = new StreamWriter(currentSessionFilePath, false))
             {
-                writer.WriteLine("Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID,TrailTypeID,SurfaceTypeID,DistToCenterline,Error_X,Error_Y,Error_Z");
+                writer.WriteLine("UserID,Condition,Timestamp,Position_X,Position_Y,Position_Z,Rotation_X,Rotation_Y,Rotation_Z,IsTargetTrace,StrokeID,TargetID,TrailTypeID,SurfaceTypeID,DistToCenterline,Error_X,Error_Y,Error_Z");
             }
         }
         catch (Exception e)
@@ -327,7 +331,9 @@ public class PathRecorder : MonoBehaviour
             {
                 foreach (var point in points)
                 {
-                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15}",
+                    string line = string.Format("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11},{12},{13},{14},{15},{16},{17}",
+                        userId,
+                        condition,
                         point.timestamp,
                         point.position.x,
                         point.position.y,

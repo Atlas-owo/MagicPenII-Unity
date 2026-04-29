@@ -1,4 +1,4 @@
-﻿/* 
+/* 
 Copyright © 2016 NaturalPoint Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,6 +31,15 @@ public class OptitrackRigidBody : MonoBehaviour
 
     [Tooltip("Subscribes to this asset when using Unicast streaming.")]
     public bool NetworkCompensation = true;
+
+    [Tooltip("Multiplier for the position data. Sets the ratio between real-world tracked movement and virtual movement.")]
+    public float PositionScaleMultiplier = 1.0f;
+
+    [Tooltip("Constant offset added to the calculated position. Useful for moving the center point.")]
+    public Vector3 PositionOffset = Vector3.zero;
+
+    [Tooltip("Per-axis multiplier for the position data. Useful for applying a gain specifically to the Y-axis or any other axis independently.")]
+    public Vector3 AxisScaleMultiplier = Vector3.one;
 
     void Start()
     {
@@ -83,7 +92,12 @@ public class OptitrackRigidBody : MonoBehaviour
         OptitrackRigidBodyState rbState = StreamingClient.GetLatestRigidBodyState( RigidBodyId, NetworkCompensation);
         if ( rbState != null )
         {
-            this.transform.localPosition = rbState.Pose.Position;
+            Vector3 scaledPos = rbState.Pose.Position;
+            scaledPos.x *= AxisScaleMultiplier.x;
+            scaledPos.y *= AxisScaleMultiplier.y;
+            scaledPos.z *= AxisScaleMultiplier.z;
+            
+            this.transform.localPosition = (scaledPos * PositionScaleMultiplier) + PositionOffset;
             this.transform.localRotation = rbState.Pose.Orientation;
         }
     }

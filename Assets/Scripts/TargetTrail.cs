@@ -22,7 +22,8 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
     [Header("Sine Wave Settings")]
     public float amplitudeStart = 0.05f;
     public float amplitudeEnd = 0.1f;
-    public float periods = 2.0f;
+    public float frequencyStart = 1.0f;
+    public float frequencyEnd = 3.0f;
 
     [Header("NURBS / Plateau Settings")]
     [Range(0.05f, 0.9f)]
@@ -35,7 +36,7 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
 
     [Header("Visuals")]
     public Color trailColor = new Color(0, 0, 0, 0.5f); // Translucent Black
-    public Color startColor = new Color(1, 1, 0, 0.5f); // Translucent Yellow
+    public Color startColor = new Color(0, 1, 0, 0.5f); // Translucent Yellow
     public Color activeStartColor = new Color(0, 1, 0, 0.5f); // Translucent Green (Active)
     public Color endColor = new Color(1, 0, 0, 0.5f);   // Translucent Red
     
@@ -46,6 +47,7 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
     [Header("State")]
     public bool isActive = false;
     public bool isCompleted = false;
+    public bool showGuideSphere = false;
     
     // Internal references
     private Vector3 startPoint;
@@ -181,7 +183,7 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
 
     private void UpdateGuideBall()
     {
-        if (guideSphere != null && trailShape == TrailShape.Straight)
+        if (showGuideSphere && guideSphere != null && trailShape == TrailShape.Straight)
         {
             if (hasStarted && !isCompleted && isActive)
             {
@@ -213,15 +215,15 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
 
     private void HandleButtonPressMode()
     {
-        bool isDrawing = penController.buttonPressed;
+        bool isDrawing = penController.buttonCPressed;
 
-        // [NEW] Dynamic Actuation Switching:
-        // When button is pressed -> Active Hybrid Pressure Control
-        // When button is released -> Disable (Standard Raycast Mode)
-        if (penController.enableDirectPressureControl != isDrawing)
-        {
-            penController.enableDirectPressureControl = isDrawing;
-        }
+        // [REMOVED] Dynamic Actuation Switching:
+        // By user request, Direct Pressure Control is now active ALL the time, 
+        // not just when the button is held.
+        // if (penController.enableDirectPressureControl != isDrawing)
+        // {
+        //     penController.enableDirectPressureControl = isDrawing;
+        // }
 
         // 1. Detect Start of Stroke (Rising Edge)
         if (isDrawing && !wasDrawing)
@@ -449,15 +451,18 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
         SetMaterial(endSphere, endColor);
         Destroy(endSphere.GetComponent<Collider>());
 
-        // Guide Sphere (Initially Hidden)
-        guideSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-        guideSphere.name = "GuideSphere";
-        guideSphere.transform.SetParent(transform);
-        guideSphere.transform.position = startPoint;
-        guideSphere.transform.localScale = Vector3.one * (0.01f * 2); // Radius 0.01
-        SetMaterial(guideSphere, new Color(1, 1, 1, 0.5f)); // Translucent White
-        Destroy(guideSphere.GetComponent<Collider>());
-        guideSphere.SetActive(false);
+        if (showGuideSphere)
+        {
+            // Guide Sphere (Initially Hidden)
+            guideSphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            guideSphere.name = "GuideSphere";
+            guideSphere.transform.SetParent(transform);
+            guideSphere.transform.position = startPoint;
+            guideSphere.transform.localScale = Vector3.one * (0.01f * 2); // Radius 0.01
+            SetMaterial(guideSphere, new Color(1, 1, 1, 0.5f)); // Translucent White
+            Destroy(guideSphere.GetComponent<Collider>());
+            guideSphere.SetActive(false);
+        }
     }
 
     private void GenerateMesh()
@@ -586,12 +591,8 @@ public class TargetTrail : MonoBehaviour, ITrailEvaluator
             if (waveUp.sqrMagnitude < 0.001f) waveUp = Vector3.up;
 
             float currentAmplitude = Mathf.Lerp(amplitudeStart, amplitudeEnd, t);
-            // 2 periods means 0 to 4pi? User asked for 2 periods. 
-            // 2 periods = 2 * 2PI = 4PI.
-            // But wait, "2 downhills and 2 uphills".
-            // 1 period = 1 uphill (peak) + 1 downhill (trough). 
-            // So 2 periods is correct.
-            float sineValue = Mathf.Sin(t * periods * Mathf.PI * 2f);
+            float phase = 2f * Mathf.PI * (frequencyStart * t + 0.5f * (frequencyEnd - frequencyStart) * t * t);
+            float sineValue = Mathf.Sin(phase);
 
             return straightPos + waveUp * currentAmplitude * sineValue;
         }

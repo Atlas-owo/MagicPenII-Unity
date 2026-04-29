@@ -522,7 +522,7 @@ public class HybridTargetTrail : MonoBehaviour, ITrailEvaluator
     private void HandleButtonPressMode()
     {
         if (penController == null) return;
-        bool isDrawing = penController.buttonPressed;
+        bool isDrawing = penController.buttonCPressed;
         
         // Sync pressure control - DISABLED for Hybrid Mode as requested
         // if (penController.enableDirectPressureControl != isDrawing)

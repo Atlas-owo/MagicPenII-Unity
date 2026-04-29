@@ -30,6 +30,12 @@ public class CarvingController : MonoBehaviour
     [Header("Input")]
     public HapticPenController penController;
 
+    [Header("Carving Tool References")]
+    [Tooltip("场景中独立作为笔尖位置的物体 (不受 HapticPenController 内部影响)")]
+    public Transform carvingTip;
+    [Tooltip("场景中独立作为笔身位置的物体 (不受 HapticPenController 内部影响)")]
+    public Transform carvingBase;
+
     // Internal Mesh Data
     private Mesh mesh;
     private Vector3[] originalVertices;
@@ -39,6 +45,10 @@ public class CarvingController : MonoBehaviour
     // Limits
     private float maxRadiusSq;
     private float minRadiusSq;
+    
+    // State Tracking
+    private bool wasButtonPressed = false;
+    private bool isColliderUpdatePending = false;
 
     void Start()
     {
@@ -69,10 +79,43 @@ public class CarvingController : MonoBehaviour
     {
         if (penController == null) return;
 
-        // Check Input
+        // 联动逻辑：按下按钮时进入物理压力阻力模式（Hybrid Mode），松开时恢复为基础的射线跟踪模式（Raycast）
         if (penController.buttonPressed)
         {
-            Carve(penController.penTip.position);
+            // 注意：Hybrid Mode 在 HapticPenController 中依然需要 Raycast 来计算目标距离
+            // 因此我们保持 enableRaycastControl = true，同时开启 enableDirectPressureControl
+            penController.enableRaycastControl = true;
+            penController.enableDirectPressureControl = true;
+
+            // 执行物理雕刻：完全不理会 HapticPenController 内部的结构，
+            // 直接根据你在脚本参数里面独立挂载的两个 Transform 进行雕刻线段判定。
+            if (carvingTip != null && carvingBase != null)
+            {
+                Carve(carvingTip.position, carvingBase.position);
+            }
+            
+            wasButtonPressed = true;
+        }
+        else
+        {
+            // 默认状态：纯射线模式（无压力反馈）
+            penController.enableRaycastControl = true;
+            penController.enableDirectPressureControl = false;
+            
+            // 如果刚刚松开按钮（一个雕刻阶段结束），则判断是否需要重构物理碰撞体和法线
+            if (wasButtonPressed)
+            {
+                if (isColliderUpdatePending)
+                {
+                    MeshCollider mc = GetComponent<MeshCollider>();
+                    if (mc != null)
+                    {
+                        mc.sharedMesh = mesh;
+                    }
+                    isColliderUpdatePending = false;
+                }
+                wasButtonPressed = false;
+            }
         }
     }
 
@@ -176,10 +219,15 @@ public class CarvingController : MonoBehaviour
         GetComponent<MeshCollider>().sharedMesh = mesh;
     }
 
-    void Carve(Vector3 worldPenPos)
+    void Carve(Vector3 worldPenTip, Vector3 worldPenBase)
     {
-        Vector3 localPenPos = transform.InverseTransformPoint(worldPenPos);
+        Vector3 localPenTip = transform.InverseTransformPoint(worldPenTip);
+        Vector3 localPenBase = transform.InverseTransformPoint(worldPenBase);
         bool meshChanged = false;
+
+        // 计算笔尖到笔身的局部空间方向向量
+        Vector3 penSegment = localPenBase - localPenTip;
+        float penSegmentSq = penSegment.sqrMagnitude;
 
         // Optimization: Bounds check?
         // Brute force is fine for <10k verts
@@ -188,15 +236,22 @@ public class CarvingController : MonoBehaviour
         {
             Vector3 v = currentVertices[i];
             
-            // For X-Axis cylinder: Cross section is YZ plane.
-            // But 'carvingRadius' is 3D distance sphere.
-            float dist = Vector3.Distance(v, localPenPos);
+            // 计算顶点 v 到笔尖-笔身线段的最短距离
+            Vector3 tipToV = v - localPenTip;
+            float t = 0f;
+            if (penSegmentSq > 0.00001f)
+            {
+                // 将顶点投影在线段上的点限制在 [0, 1] 以内，保证检测不会超出笔尖和笔身的范围
+                t = Mathf.Clamp01(Vector3.Dot(tipToV, penSegment) / penSegmentSq);
+            }
+            Vector3 closestPointOnPen = localPenTip + t * penSegment;
+            float dist = Vector3.Distance(v, closestPointOnPen);
             
             if (dist < carvingRadius)
             {
                 // 常规平滑衰减
-                float t = Mathf.Clamp01(dist / carvingRadius);
-                float baseFalloff = Mathf.Cos(t * Mathf.PI * 0.5f); 
+                float falloffT = Mathf.Clamp01(dist / carvingRadius);
+                float baseFalloff = Mathf.Cos(falloffT * Mathf.PI * 0.5f); 
                 
                 // 加入基于顶点空间位置的柏林噪声 (Perlin Noise) 来模拟木材的肌理感和粗糙边缘
                 // 采样时乘以 noiseScale，控制纹理的细密程度
@@ -248,7 +303,10 @@ public class CarvingController : MonoBehaviour
         {
             mesh.vertices = currentVertices;
             mesh.colors = colors;
-            mesh.RecalculateNormals();
+            mesh.RecalculateNormals(); // 已将法线重算加回，保证雕刻过程中光影即时正确
+            
+            // 标记网格发生了形变，等松开按钮时统一更新物理碰撞体，避免实时更新导致严重卡顿
+            isColliderUpdatePending = true;
         }
     }
 }

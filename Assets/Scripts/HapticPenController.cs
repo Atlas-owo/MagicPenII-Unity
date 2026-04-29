@@ -15,6 +15,7 @@ public class HapticPenController : MonoBehaviour
     [Header("Pen Objects")]
     public Transform penBase; // The base of the pen (this GameObject)
     public Transform penTip; // Child object representing the pen tip
+    public GameObject customPenTipModel; // 可在此处挂载自定义的笔模型预制体 (Prefab)
     public Transform surface; // The surface to measure distance to
 
     [Header("Distance Measurement")]
@@ -184,11 +185,22 @@ public class HapticPenController : MonoBehaviour
             tipObj.transform.localPosition = Vector3.forward * penLength;
             penTip = tipObj.transform;
 
-            // Add a small sphere to visualize the tip
-            GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
-            sphere.transform.SetParent(tipObj.transform);
-            sphere.transform.localScale = Vector3.one * 0.001f;
-            sphere.transform.localPosition = Vector3.zero;
+            if (customPenTipModel != null)
+            {
+                // 如果用户指定了自定义笔模型，则实例化为笔尖的子物体
+                GameObject model = Instantiate(customPenTipModel, tipObj.transform);
+                model.transform.localPosition = Vector3.zero;
+                model.transform.localRotation = Quaternion.identity;
+                // 如果模型自带碰撞体，可能会干扰射线检测，如有需要可将模型的layer设置为IgnoreRaycast
+            }
+            else
+            {
+                // Add a small sphere to visualize the tip
+                GameObject sphere = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                sphere.transform.SetParent(tipObj.transform);
+                sphere.transform.localScale = Vector3.one * 0.001f;
+                sphere.transform.localPosition = Vector3.zero;
+            }
         }
 
         if (surface == null)
@@ -528,6 +540,15 @@ public class HapticPenController : MonoBehaviour
                 {
                     float t = Mathf.InverseLerp(pressureThresholdStart, pressureThresholdMax, pressureReading);
                     int pwm = (int)Mathf.Lerp(motorSpeedStart, motorSpeedMax, t);
+                    
+                    // Software Cushion: Reduce PWM near physical limit
+                    float currentRealMeters = realDistance / 1000f;
+                    if (currentRealMeters < 0.005f) { // Under 5mm
+                        pwm = Mathf.Min(pwm, 100); 
+                    }
+                    if (currentRealMeters <= 0.001f) { // Bottom 1mm
+                        pwm = 0;
+                    }
                     
                     // Retract using negative direct velocity
                     command = $"A-{pwm}\n";

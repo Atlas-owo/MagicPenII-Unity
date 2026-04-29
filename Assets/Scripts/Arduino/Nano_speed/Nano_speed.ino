@@ -35,11 +35,15 @@ volatile long targetPosition = 0;  // Made volatile since it can change anytime
 // Movement parameters
 const int FAST_SPEED = 255;    // PWM for fast movement
 const int SLOW_SPEED = 150;    // PWM for slow approach
-const int CREEP_SPEED = 80;    // PWM for final approach
+const int BRAKE_SPEED = 150;   // PWM for active reverse braking
+const int CREEP_SPEED = 100;    // PWM for final approach
 
-const int SLOW_DISTANCE = 300;   // Start slowing down at this distance
-const int CREEP_DISTANCE = 200;  // Start creeping at this distance
-const int STOP_TOLERANCE = 10;   // Stop when within this many counts
+const int SLOW_DISTANCE = 900;   // Start slowing down at this distance
+const int BRAKE_DISTANCE = 200;   // Distance at which reverse braking is applied
+const int CREEP_DISTANCE = 100;   // Final creeping distance
+const int STOP_TOLERANCE = 15;   // Stop when within this many counts
+
+const float END_BRAKE_SPEED = 1800.0; // (counts/s) Below this speed, active braking stops and creep begins
 
 // Debugging
 bool debugMode = true;
@@ -199,6 +203,20 @@ void readSensorData() {
 void updateContinuousMovement() {
   long currentPos = encoderCount;
 
+  // Velocity calculation for state machine
+  static unsigned long lastVelocityTime = 0;
+  static long lastVelocityEncoder = 0;
+  static float currentVelocity = 0.0;
+  
+  unsigned long now = micros();
+  // Update velocity roughly every 5ms (5000us)
+  if (now - lastVelocityTime >= 5000) {
+    currentVelocity = (float)(currentPos - lastVelocityEncoder) * 1000000.0 / (float)(now - lastVelocityTime);
+    lastVelocityEncoder = currentPos;
+    lastVelocityTime = now;
+  }
+  float absSpeed = abs(currentVelocity);
+
   // Safety check: stop if we've exceeded limits (but not during homing)
   if (!isHoming) {
     if (currentPos < MIN_POSITION && targetPosition >= MIN_POSITION) {
@@ -214,7 +232,6 @@ void updateContinuousMovement() {
     }
   }
 
-
   long error = targetPosition - currentPos;
   long absError = abs(error);
 
@@ -224,19 +241,51 @@ void updateContinuousMovement() {
     return;
   }
 
-  // Determine direction (1 = forward, -1 = reverse)
-  int direction = (error > 0) ? 1 : -1;
-
-  // Determine speed based on distance to target
+  // Determine base direction (1 = forward, -1 = reverse)
+  int base_direction = (error > 0) ? 1 : -1;
+  int apply_direction = base_direction;
   int speed = FAST_SPEED;
-  if (absError <= CREEP_DISTANCE) {
+  
+  // Phase state machine for movement
+  enum MovePhase { PHASE_CRUISE, PHASE_BRAKE, PHASE_CREEP };
+  static MovePhase movePhase = PHASE_CRUISE;
+
+  if (absError > BRAKE_DISTANCE) {
+    movePhase = PHASE_CRUISE;
+  } else {
+    // Inside the braking zone
+    if (movePhase == PHASE_CRUISE) {
+      if (absSpeed > END_BRAKE_SPEED) {
+        movePhase = PHASE_BRAKE; // Too fast, trigger active braking
+      } else {
+        movePhase = PHASE_CREEP; // Already slow enough, skip braking
+      }
+    } else if (movePhase == PHASE_BRAKE) {
+      // Monitor speed and stop braking once it drops sufficiently
+      if (absSpeed <= END_BRAKE_SPEED) {
+        movePhase = PHASE_CREEP;
+      }
+    }
+  }
+
+  // Execute current phase
+  if (movePhase == PHASE_CRUISE) {
+    apply_direction = base_direction;
+    if (absError <= SLOW_DISTANCE) {
+      speed = SLOW_SPEED;
+    } else {
+      speed = FAST_SPEED;
+    }
+  } else if (movePhase == PHASE_BRAKE) {
+    apply_direction = -base_direction; // Active reverse
+    speed = BRAKE_SPEED;
+  } else if (movePhase == PHASE_CREEP) {
+    apply_direction = base_direction;
     speed = CREEP_SPEED;
-  } else if (absError <= SLOW_DISTANCE) {
-    speed = SLOW_SPEED;
   }
 
   // Apply movement using A4950 logic
-  setMotor(direction, speed);
+  setMotor(apply_direction, speed);
 
 }
 
@@ -602,6 +651,13 @@ void updateEncoder() {
 
   // Update count based on state transition
   encoderCount += encoderStates[sum];
+
+  // Auto-Homing Anti-Slip Protection: Calibrate to 0 firmly on hard collision
+  if (encoderCount < 0) {
+    if (digitalRead(BUTTON_HOME) == LOW) { // Active LOW
+      encoderCount = 0;
+    }
+  }
 
   // Save current state for next time
   lastEncoded = currentEncoded;

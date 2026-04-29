@@ -8,6 +8,8 @@ public class TubeTrailRenderer : MonoBehaviour
     [Header("Targeting")]
     public Transform targetObject;
 
+    public enum RenderMode { TubeOnly, TubeAndRibbon }
+
     [Header("Tube Settings")]
     public float radius = 0.1f;
     public Color color = Color.white;
@@ -15,6 +17,10 @@ public class TubeTrailRenderer : MonoBehaviour
     [Range(3, 32)]
     public int radialSegments = 8;
     public float minDistance = 0.05f;
+
+    [Header("Ribbon Settings")]
+    public RenderMode renderMode = RenderMode.TubeOnly;
+    public float ribbonWidth = 0.2f;
 
     [Header("Control")]
     public bool isDrawing = false;
@@ -69,7 +75,7 @@ public class TubeTrailRenderer : MonoBehaviour
         if (!manualControl && penController != null)
         {
             // User requested logic: isDrawing is true when button is NOT pressed
-            isDrawing = penController.buttonPressed;
+            isDrawing = penController.buttonCPressed;
         }
 
         // Detect start of a new stroke
@@ -130,13 +136,19 @@ public class TubeTrailRenderer : MonoBehaviour
         foreach (var stroke in strokes)
         {
             if (stroke.Count < 2) continue;
+            
             totalVerts += stroke.Count * radialSegments;
             totalTris += (stroke.Count - 1) * radialSegments * 6;
+            
+            if (renderMode == RenderMode.TubeAndRibbon)
+            {
+                totalVerts += stroke.Count * 2;
+                totalTris += (stroke.Count - 1) * 12; // 2 faces * 2 triangles * 3 verts
+            }
         }
 
         if (totalVerts == 0) return;
 
-        // Check for mesh limits (Unity's default 16-bit index buffer limit is 65535 vertices)
         if (totalVerts > 65000)
         {
             mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
@@ -153,6 +165,9 @@ public class TubeTrailRenderer : MonoBehaviour
         foreach (var stroke in strokes)
         {
             if (stroke.Count < 2) continue;
+
+            int tubeVertStart = vertOffset;
+            int ribbonVertStart = tubeVertStart + stroke.Count * radialSegments;
 
             for (int i = 0; i < stroke.Count; i++)
             {
@@ -176,7 +191,7 @@ public class TubeTrailRenderer : MonoBehaviour
                 Vector3 right = Vector3.Cross(forward, up).normalized;
                 up = Vector3.Cross(right, forward).normalized;
 
-                // Generate ring vertices
+                // --- Generate Tube Vertices ---
                 for (int j = 0; j < radialSegments; j++)
                 {
                     float angle = j * Mathf.PI * 2f / radialSegments;
@@ -185,41 +200,92 @@ public class TubeTrailRenderer : MonoBehaviour
 
                     Vector3 offset = (right * cos + up * sin) * radius;
                     Vector3 worldPos = stroke[i] + offset;
-                    vertices[vertOffset + i * radialSegments + j] = transform.InverseTransformPoint(worldPos);
+                    vertices[tubeVertStart + i * radialSegments + j] = transform.InverseTransformPoint(worldPos);
                     
-                    // UVs
                     float u = (float)i / (stroke.Count - 1);
                     float v = (float)j / radialSegments;
-                    uvs[vertOffset + i * radialSegments + j] = new Vector2(u, v);
+                    uvs[tubeVertStart + i * radialSegments + j] = new Vector2(u, v);
+                }
+
+                // --- Generate Ribbon Vertices ---
+                if (renderMode == RenderMode.TubeAndRibbon)
+                {
+                    Vector3 ribbonRight = Vector3.Cross(Vector3.up, forward).normalized;
+                    if (ribbonRight.sqrMagnitude < 0.001f) ribbonRight = Vector3.right;
+
+                    Vector3 halfWidthOffset = ribbonRight * (ribbonWidth * 0.5f);
+                    
+                    Vector3 leftPos = stroke[i] - halfWidthOffset;
+                    Vector3 rightPos = stroke[i] + halfWidthOffset;
+
+                    int rBase = ribbonVertStart + i * 2;
+                    vertices[rBase] = transform.InverseTransformPoint(leftPos);
+                    vertices[rBase + 1] = transform.InverseTransformPoint(rightPos);
+                    
+                    float u = (float)i / (stroke.Count - 1);
+                    uvs[rBase] = new Vector2(u, 0f);
+                    uvs[rBase + 1] = new Vector2(u, 1f);
                 }
             }
 
-            // Generate triangles
+            // --- Generate Tube Triangles ---
             for (int i = 0; i < stroke.Count - 1; i++)
             {
                 for (int j = 0; j < radialSegments; j++)
                 {
-                    int currentRing = i * radialSegments;
-                    int nextRing = (i + 1) * radialSegments;
+                    int currentRing = tubeVertStart + i * radialSegments;
+                    int nextRing = tubeVertStart + (i + 1) * radialSegments;
 
-                    int current = vertOffset + currentRing + j;
-                    int next = vertOffset + currentRing + (j + 1) % radialSegments;
-                    int nextRingCurrent = vertOffset + nextRing + j;
-                    int nextRingNext = vertOffset + nextRing + (j + 1) % radialSegments;
+                    int current = currentRing + j;
+                    int next = currentRing + (j + 1) % radialSegments;
+                    int nextRingCurrent = nextRing + j;
+                    int nextRingNext = nextRing + (j + 1) % radialSegments;
 
-                    // Triangle 1
                     triangles[triOffset++] = current;
                     triangles[triOffset++] = nextRingCurrent;
                     triangles[triOffset++] = next;
 
-                    // Triangle 2
                     triangles[triOffset++] = nextRingCurrent;
                     triangles[triOffset++] = nextRingNext;
                     triangles[triOffset++] = next;
                 }
             }
 
+            // --- Generate Ribbon Triangles ---
+            if (renderMode == RenderMode.TubeAndRibbon)
+            {
+                for (int i = 0; i < stroke.Count - 1; i++)
+                {
+                    int botLeft = ribbonVertStart + i * 2;
+                    int botRight = ribbonVertStart + i * 2 + 1;
+                    int topLeft = ribbonVertStart + (i + 1) * 2;
+                    int topRight = ribbonVertStart + (i + 1) * 2 + 1;
+
+                    // Front face
+                    triangles[triOffset++] = botLeft;
+                    triangles[triOffset++] = topLeft;
+                    triangles[triOffset++] = botRight;
+
+                    triangles[triOffset++] = botRight;
+                    triangles[triOffset++] = topLeft;
+                    triangles[triOffset++] = topRight;
+
+                    // Back face
+                    triangles[triOffset++] = botLeft;
+                    triangles[triOffset++] = botRight;
+                    triangles[triOffset++] = topLeft;
+
+                    triangles[triOffset++] = botRight;
+                    triangles[triOffset++] = topRight;
+                    triangles[triOffset++] = topLeft;
+                }
+            }
+
             vertOffset += stroke.Count * radialSegments;
+            if (renderMode == RenderMode.TubeAndRibbon)
+            {
+                vertOffset += stroke.Count * 2;
+            }
         }
 
         mesh.Clear();

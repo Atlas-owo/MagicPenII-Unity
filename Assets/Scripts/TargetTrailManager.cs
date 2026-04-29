@@ -1,6 +1,8 @@
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
+using System.IO;
+using System;
 
 public class TargetTrailManager : MonoBehaviour
 {
@@ -16,9 +18,22 @@ public class TargetTrailManager : MonoBehaviour
         AutoTouch
     }
 
+    public enum PenTaskMode { None, Haptic, MidAir }
+
     [Header("Settings")]
     public SessionMode sessionMode = SessionMode.Standard;
     public InteractionMode interactionMode = InteractionMode.ButtonPress;
+    public bool enableGuideSphere = false;
+
+    [Header("Pen Control Settings")]
+    public PenTaskMode penTaskMode = PenTaskMode.Haptic;
+
+    [Header("Data Logging")]
+    public string userId = "P00";
+    [Tooltip("Leave empty to save in Assets/ folder. Example: D:/ExpData/")]
+    public string customOutputDirectory = "";
+    [Tooltip("When enabled, the setup runs normally but no data is saved to disk")]
+    public bool testMode = false;
     
     // Legacy settings (apply to both or primarily Standard)
     public float delayBetweenTrails = 1.0f;
@@ -51,7 +66,8 @@ public class TargetTrailManager : MonoBehaviour
         public TargetTrail.TrailShape shape;
         public float amplitudeStart; // e.g. 0.05
         public float amplitudeEnd;   // e.g. 0.1
-        public float periods;        // e.g. 2
+        public float frequencyStart; // e.g. 1.0
+        public float frequencyEnd;   // e.g. 3.0
         
         // NURBS / Plateau Settings (Only for TargetTrail Nurbs)
         public float nurbsPlateauWidth;      // Default 0.3
@@ -68,9 +84,46 @@ public class TargetTrailManager : MonoBehaviour
     private void Start()
     {
         pathRecorder = FindObjectOfType<PathRecorder>();
+
+        var penController = FindObjectOfType<HapticPenController>();
+        if (penController != null)
+        {
+            if (penTaskMode == PenTaskMode.Haptic)
+            {
+                penController.enableRaycastControl = true;
+                penController.enableMidairMode = false;
+                penController.enableDirectPressureControl = true;
+                
+                int surfaceLayer = LayerMask.NameToLayer("Surface");
+                if (surfaceLayer == -1) surfaceLayer = LayerMask.NameToLayer("surface");
+                if (surfaceLayer != -1) penController.surfaceLayerMask |= (1 << surfaceLayer);
+            }
+            else if (penTaskMode == PenTaskMode.MidAir)
+            {
+                penController.enableRaycastControl = false;
+                penController.enableMidairMode = true;
+                penController.enableDirectPressureControl = false;
+            }
+        }
+
         GenerateInputTasks();
 
         Debug.Log($"TargetTrailManager: Generated {trails.Count} trails.");
+
+        if (pathRecorder != null && !testMode)
+        {
+            pathRecorder.userId = this.userId;
+            pathRecorder.condition = this.penTaskMode.ToString();
+
+            string baseDir = string.IsNullOrEmpty(customOutputDirectory) ? Application.dataPath : customOutputDirectory;
+            string conditionFolder = this.penTaskMode.ToString();
+            string finalDir = Path.Combine(baseDir, conditionFolder);
+            
+            if (!System.IO.Directory.Exists(finalDir)) System.IO.Directory.CreateDirectory(finalDir);
+            
+            pathRecorder.customSavePath = finalDir;
+            pathRecorder.customFileName = $"{userId}_{conditionFolder}_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+        }
 
         // Start the sequence
         StartTrails();
@@ -131,12 +184,14 @@ public class TargetTrailManager : MonoBehaviour
                 TargetTrail trail = trailObj.AddComponent<TargetTrail>();
                 
                 // Configure Shape & Params
+                trail.showGuideSphere = this.enableGuideSphere;
                 trail.trailShape = def.shape;
                 if (def.shape == TargetTrail.TrailShape.SineWave) 
                 {
                     trail.amplitudeStart = def.amplitudeStart;
                     trail.amplitudeEnd = def.amplitudeEnd;
-                    trail.periods = def.periods > 0 ? def.periods : 2.0f; 
+                    trail.frequencyStart = def.frequencyStart > 0 ? def.frequencyStart : 1.0f;
+                    trail.frequencyEnd = def.frequencyEnd > 0 ? def.frequencyEnd : 3.0f;
                 }
                 else if (def.shape == TargetTrail.TrailShape.Nurbs)
                 {
@@ -193,6 +248,8 @@ public class TargetTrailManager : MonoBehaviour
         
         TargetTrail trail = trailObj.AddComponent<TargetTrail>();
         
+        trail.showGuideSphere = this.enableGuideSphere;
+
         // Pass global settings if needed
         if (successSound != null) trail.successSound = successSound;
 
@@ -206,7 +263,7 @@ public class TargetTrailManager : MonoBehaviour
          if (trails.Count == 0) return;
         
         // Start Recording Session
-        if (pathRecorder != null)
+        if (pathRecorder != null && !testMode)
         {
             pathRecorder.StartRecording();
         }
@@ -226,7 +283,7 @@ public class TargetTrailManager : MonoBehaviour
         {
             Debug.Log("TargetTrailManager: All trails completed.");
             // Stop Recording Session
-            if (pathRecorder != null)
+            if (pathRecorder != null && !testMode)
             {
                 pathRecorder.StopRecording();
             }
@@ -262,7 +319,8 @@ public class TargetTrailManager : MonoBehaviour
         public string shape;
         public float amplitudeStart;
         public float amplitudeEnd;
-        public float periods;
+        public float frequencyStart;
+        public float frequencyEnd;
         public float nurbsPlateauWidth;
         public float nurbsTransitionLength;
         public float nurbsTransitionSteepness;
@@ -286,7 +344,8 @@ public class TargetTrailManager : MonoBehaviour
                 exportItem.shape = def.shape.ToString();
                 exportItem.amplitudeStart = def.amplitudeStart;
                 exportItem.amplitudeEnd = def.amplitudeEnd;
-                exportItem.periods = def.periods > 0 ? def.periods : 2.0f; // Ensure default matches logic
+                exportItem.frequencyStart = def.frequencyStart > 0 ? def.frequencyStart : 1.0f; // Ensure default matches logic
+                exportItem.frequencyEnd = def.frequencyEnd > 0 ? def.frequencyEnd : 3.0f;
                 exportItem.nurbsPlateauWidth = def.nurbsPlateauWidth;
                 exportItem.nurbsTransitionLength = def.nurbsTransitionLength;
                 exportItem.nurbsTransitionSteepness = def.nurbsTransitionSteepness;
